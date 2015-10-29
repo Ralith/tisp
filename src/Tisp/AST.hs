@@ -3,6 +3,7 @@ module Tisp.AST (AST(..), ASTVal(..), Definition(..), Record, build, buildRecord
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Either (partitionEithers)
+import Data.Ratio
 
 import Text.PrettyPrint.ANSI.Leijen (Doc, Pretty, pretty, (<>), (<+>))
 import qualified Text.PrettyPrint.ANSI.Leijen as PP hiding ((<$>))
@@ -12,6 +13,7 @@ import qualified Data.Map.Strict as M
 
 import Tisp.Parse (Tree(..), TreeVal(..))
 import Tisp.Tokenize (Symbol, Atom(..), SourceRange(..), SourceLoc(..))
+import Tisp.Value (Literal(..))
 
 data AST = AST SourceRange ASTVal
   deriving (Show)
@@ -19,7 +21,7 @@ data AST = AST SourceRange ASTVal
 data ASTVal = ASTError SourceLoc Text
             | Abs [(Symbol, AST)] AST
             | App AST [AST]
-            | Num Rational
+            | Literal Literal
             | Ref Symbol
             | Case AST [(Symbol, AST)]
   deriving (Show)
@@ -35,10 +37,10 @@ parens :: Doc -> Doc
 parens = PP.parens . PP.align
 
 instance Pretty ASTVal where
-  pretty (ASTError l t) = parens $ pretty l <> PP.space <> PP.text (T.unpack t)
+  pretty (ASTError l t) = PP.angles $ pretty l <> PP.space <> PP.text (T.unpack t)
   pretty (Abs args x) = parens $ PP.char 'λ' <+> PP.parens (PP.fillSep $ map (PP.text . T.unpack . fst) args) <+> pretty x
   pretty (App f xs) = parens $ PP.fillSep (pretty f : map pretty xs)
-  pretty (Num n) = parens $ PP.rational n
+  pretty (Literal (Num n)) = if denominator n == 1 then PP.integer (numerator n) else (PP.char '#' <> (PP.angles $ PP.rational n))
   pretty (Ref v) = PP.text . T.unpack $ v
   pretty (Case x cs) = parens $ PP.text "case" <+> pretty x <+> (PP.fillSep (map (\(ctor, expr) -> PP.text (T.unpack ctor) <+> PP.text ": " <+> pretty expr) cs))
 
@@ -58,7 +60,7 @@ build (Tree r@(SourceRange treeStart _) v) = AST r $ helper v
     helper :: TreeVal -> ASTVal
     helper (TreeError l t) = ASTError l t
     helper (Leaf (Symbol x)) = Ref x
-    helper (Leaf (Number x)) = Num x
+    helper (Leaf (Number x)) = Literal (Num x)
     helper (Branch (Tree _ (Leaf (Symbol "lambda")) : Tree _ (Branch args) : body : [])) =
       case lambdaArgs args of
         Right argSyms -> Abs argSyms (build body)

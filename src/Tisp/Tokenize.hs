@@ -13,6 +13,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Read as T
 import Data.Char
 import Data.Word (Word64)
+import Data.Ratio
 
 import Control.Monad.RWS
 import Control.Lens
@@ -51,7 +52,7 @@ data TokenValue = TokError SourceLoc Text | Atom Atom | LParen | RParen
   deriving (Show)
 
 instance Pretty Atom where
-  pretty (Number n) = PP.rational n
+  pretty (Number n) = if denominator n == 1 then PP.integer (numerator n) else (PP.char '#' <> (PP.angles $ PP.rational n))
   pretty (Symbol s) = PP.text (T.unpack s)
 
 instance Pretty SourceLoc where

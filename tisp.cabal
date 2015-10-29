@@ -15,7 +15,7 @@ cabal-version:       >=1.10
 executable tisp
   main-is:             Main.hs
   default-extensions:  OverloadedStrings, TemplateHaskell, GeneralizedNewtypeDeriving, RecordWildCards, StandaloneDeriving
-  other-modules:       Tisp.Tokenize, Tisp.Parse, Tisp.AST
+  other-modules:       Tisp.Tokenize, Tisp.Parse, Tisp.AST, Tisp.Value, Tisp.Expr, Tisp.Primitives
   -- other-extensions:    
   build-depends:       base >=4.8 && <5, containers ==0.5.*, bytestring ==0.10.*, text ==1.2.*, lens ==4.*, mtl ==2.2.*, ansi-wl-pprint ==0.6.*, llvm-general-pure ==3.5.*
   hs-source-dirs:      src
