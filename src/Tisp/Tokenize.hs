@@ -4,6 +4,7 @@ module Tisp.Tokenize
   , SourceLoc(..), char, line, column
   , SourceRange(..), start, end
   , TokenValue(..)
+  , FromSource, sourceRange
   , Token(..)
   , tokenize
   ) where
@@ -37,8 +38,14 @@ data TokState = TokState { _loc :: SourceLoc, _remaining :: Text }
   deriving (Show)
 makeLenses ''TokState
 
+class FromSource a where
+  sourceRange :: Lens' a SourceRange
+
 data Token = Token SourceRange TokenValue
   deriving (Show)
+
+instance FromSource Token where
+  sourceRange f (Token r v) = fmap (\r' -> Token r' v) (f r)
 
 newtype Tokenization = Tokenization [Token]
 

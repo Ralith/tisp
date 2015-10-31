@@ -1,7 +1,6 @@
 module Tisp.Value (Literal(..), Value(..)) where
 
 import Data.Text (Text)
-import qualified Data.Text as T
 
 import Tisp.Tokenize (SourceLoc(..), SourceRange(..))
 

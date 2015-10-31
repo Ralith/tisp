@@ -30,7 +30,7 @@ main = do
       putDoc (pretty t) >> putStrLn ""
       let ast = build t
       putDoc (pretty ast) >> putStrLn ""
-      case eval emptyEnv (fromAST ast) of
+      case eval defaultEnv (fromAST ast) of
         VLiteral l -> print l
         VError _ _ msg -> putStrLn "ERROR:" >> BS.putStr (encodeUtf8 msg) >> putStrLn ""
         VFunc _ -> putStrLn "#<function>"
