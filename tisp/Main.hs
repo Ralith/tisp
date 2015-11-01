@@ -26,14 +26,17 @@ main = do
   -- putStrLn ""
   case tree of
     Nothing -> return ()
-    Just (t, _, _) -> do
-      putDoc (pretty t) >> putStrLn ""
-      let ast = build t
-      putDoc (pretty ast) >> putStrLn ""
-      case eval defaultEnv (fromAST ast) of
-        VLiteral l -> print l
-        VError _ _ msg -> putStrLn "ERROR:" >> BS.putStr (encodeUtf8 msg) >> putStrLn ""
-        VFunc _ -> putStrLn "#<function>"
+    Just (t, _, _) ->
+      case infer . fromAST . fromTree $ t of
+        Left err -> do
+          putStrLn "type error: "
+          print err
+        Right typed -> do
+          print . exprTy $ typed
+      -- case eval defaultEnv (fromAST ast) of
+      --   VLiteral l -> print l
+      --   VError _ _ msg -> putStrLn "ERROR:" >> BS.putStr (encodeUtf8 msg) >> putStrLn ""
+      --   VFunc _ -> putStrLn "#<function>"
       -- putStrLn ""
       -- let record = buildRecord [t]
       -- forM_ (M.toList . fst $ record) $ \(name, Definition _ ty value) -> do

@@ -1,4 +1,4 @@
-module Tisp.AST (AST(..), ASTVal(..), Definition(..), Record, build, buildRecord) where
+module Tisp.AST (AST(..), ASTVal(..), Definition(..), Record, fromTree, buildRecord) where
 
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -51,11 +51,11 @@ buildRecord forms = (M.fromList defs, errs)
 
 recordEntry :: Tree -> Either (SourceRange, Text) (Symbol, Definition)
 recordEntry (Tree _ (Branch [(Tree _ (Leaf (Symbol "def"))), (Tree _ (Leaf (Symbol name))), ty, value])) =
-  Right (name, Definition name (build ty) (build value))
+  Right (name, Definition name (fromTree ty) (fromTree value))
 recordEntry (Tree r _) = Left (r, "illegal definition")
 
-build :: Tree -> AST
-build (Tree r@(SourceRange treeStart _) v) = AST r $ helper v
+fromTree :: Tree -> AST
+fromTree (Tree r@(SourceRange treeStart _) v) = AST r $ helper v
   where
     helper :: TreeVal -> ASTVal
     helper (TreeError l t) = ASTError l t
@@ -63,21 +63,21 @@ build (Tree r@(SourceRange treeStart _) v) = AST r $ helper v
     helper (Leaf (Number x)) = Literal (Num x)
     helper (Branch (Tree _ (Leaf (Symbol "lambda")) : Tree _ (Branch args) : body : [])) =
       case lambdaArgs args of
-        Right argSyms -> Abs argSyms (build body)
+        Right argSyms -> Abs argSyms (fromTree body)
         Left (l, e) -> ASTError l e
     helper (Branch ((Tree _ (Leaf (Symbol "case"))) : value : cases)) =
       case mapM buildCase cases of
-        Right cs -> Case (build value) cs
+        Right cs -> Case (fromTree value) cs
         Left (l, e) -> ASTError l e
     helper (Branch []) = ASTError treeStart "illegal application (at least one function and one argument must be supplied)"
     helper (Branch [(Tree _ x)]) = helper x
-    helper (Branch (f:xs)) = App (build f) (map build xs)
+    helper (Branch (f:xs)) = App (fromTree f) (map fromTree xs)
 
 lambdaArgs :: [Tree] -> Either (SourceLoc, Text) [(Symbol, AST)]
-lambdaArgs (Tree _ ((Branch [Tree _ (Leaf (Symbol s)), ty])):xs) = lambdaArgs xs >>= (\x -> return ((s, build ty):x))
+lambdaArgs (Tree _ ((Branch [Tree _ (Leaf (Symbol s)), ty])):xs) = lambdaArgs xs >>= (\x -> return ((s, fromTree ty):x))
 lambdaArgs [] = return []
 lambdaArgs ((Tree (SourceRange startLoc _) _):_) = Left (startLoc, "illegal argument name (should be (symbol type))")
 
 buildCase :: Tree -> Either (SourceLoc, Text) (Symbol, AST)
-buildCase (Tree _ (Branch [Tree _ (Leaf (Symbol name)), function])) = Right (name, build function)
+buildCase (Tree _ (Branch [Tree _ (Leaf (Symbol name)), function])) = Right (name, fromTree function)
 buildCase (Tree (SourceRange startLoc _) _) = Left (startLoc, "illegal case (should be (constructor lambda)")
