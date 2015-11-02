@@ -4,7 +4,7 @@ module Tisp.Tokenize
   , SourceLoc(..), char, line, column
   , SourceRange(..), start, end
   , TokenValue(..)
-  , FromSource, sourceRange
+  , HasRange, sourceRange
   , Token(..)
   , tokenize
   ) where
@@ -24,7 +24,7 @@ import qualified Text.PrettyPrint.ANSI.Leijen as PP hiding ((<$>))
 
 type Symbol = Text
 
-data Atom = Number Rational | Symbol Symbol
+data Atom = Number Rational | AText Text | Symbol Symbol
   deriving (Show)
 
 data SourceLoc = SourceLoc { _char :: Word64, _line :: Word64, _column :: Word64 }
@@ -38,13 +38,16 @@ data TokState = TokState { _loc :: SourceLoc, _remaining :: Text }
   deriving (Show)
 makeLenses ''TokState
 
-class FromSource a where
+class HasRange a where
   sourceRange :: Lens' a SourceRange
+
+instance HasRange SourceRange where
+  sourceRange f r = fmap id (f r)
 
 data Token = Token SourceRange TokenValue
   deriving (Show)
 
-instance FromSource Token where
+instance HasRange Token where
   sourceRange f (Token r v) = fmap (\r' -> Token r' v) (f r)
 
 newtype Tokenization = Tokenization [Token]
@@ -60,6 +63,7 @@ data TokenValue = TokError SourceLoc Text | Atom Atom | LParen | RParen
 
 instance Pretty Atom where
   pretty (Number n) = if denominator n == 1 then PP.integer (numerator n) else (PP.char '#' <> (PP.angles $ PP.rational n))
+  pretty (AText t) = PP.dquotes $ PP.text (T.unpack t)
   pretty (Symbol s) = PP.text (T.unpack s)
 
 instance Pretty SourceLoc where

@@ -1,15 +1,15 @@
-module Tisp.AST (AST(..), ASTVal(..), Definition(..), Record, fromTree, buildRecord) where
+module Tisp.AST (AST(..), ASTVal(..), Pattern(..), Definition(..), Record, fromTree, buildRecord) where
 
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Either (partitionEithers)
-import Data.Ratio
 
 import Text.PrettyPrint.ANSI.Leijen (Doc, Pretty, pretty, (<>), (<+>))
 import qualified Text.PrettyPrint.ANSI.Leijen as PP hiding ((<$>))
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Data.Maybe (fromJust)
 
 import Tisp.Parse (Tree(..), TreeVal(..))
 import Tisp.Tokenize (Symbol, Atom(..), SourceRange(..), SourceLoc(..))
@@ -18,12 +18,15 @@ import Tisp.Value (Literal(..))
 data AST = AST SourceRange ASTVal
   deriving (Show)
 
+data Pattern = PLit Literal | PData Symbol | PAny
+  deriving (Show)
+
 data ASTVal = ASTError SourceLoc Text
             | Abs [(Symbol, AST)] AST
             | App AST [AST]
             | Literal Literal
             | Ref Symbol
-            | Case AST [(Symbol, AST)]
+            | Case AST [(Pattern, [Symbol], AST)]
   deriving (Show)
 
 data Definition = Definition Symbol AST AST
@@ -40,9 +43,14 @@ instance Pretty ASTVal where
   pretty (ASTError l t) = PP.angles $ pretty l <> PP.space <> PP.text (T.unpack t)
   pretty (Abs args x) = parens $ PP.char 'λ' <+> PP.parens (PP.fillSep $ map (PP.text . T.unpack . fst) args) <+> pretty x
   pretty (App f xs) = parens $ PP.fillSep (pretty f : map pretty xs)
-  pretty (Literal (Num n)) = if denominator n == 1 then PP.integer (numerator n) else (PP.char '#' <> (PP.angles $ PP.rational n))
+  pretty (Literal l) = pretty l
   pretty (Ref v) = PP.text . T.unpack $ v
-  pretty (Case x cs) = parens $ PP.text "case" <+> pretty x <+> (PP.fillSep (map (\(ctor, expr) -> PP.text (T.unpack ctor) <+> PP.text ": " <+> pretty expr) cs))
+  pretty (Case x cs) = parens $ PP.text "case" <+> pretty x <+>
+                       (PP.fillSep (map (\(pat, vars, expr) -> (case pat of
+                                                                 PData sym -> parens (PP.text (T.unpack sym) <+> PP.fillSep (map (PP.text . T.unpack) vars))
+                                                                 PLit l -> pretty l
+                                                                 PAny -> PP.text (T.unpack (vars !! 0))
+                                                               ) <+> pretty expr) cs))
 
 buildRecord :: [Tree] -> (Record, [(SourceRange, Text)])
 buildRecord forms = (M.fromList defs, errs)
@@ -60,7 +68,8 @@ fromTree (Tree r@(SourceRange treeStart _) v) = AST r $ helper v
     helper :: TreeVal -> ASTVal
     helper (TreeError l t) = ASTError l t
     helper (Leaf (Symbol x)) = Ref x
-    helper (Leaf (Number x)) = Literal (Num x)
+    helper (Leaf (Number x)) = Literal (LitNum x)
+    helper (Leaf (AText x)) = Literal (LitText x)
     helper (Branch (Tree _ (Leaf (Symbol "lambda")) : Tree _ (Branch args) : body : [])) =
       case lambdaArgs args of
         Right argSyms -> Abs argSyms (fromTree body)
@@ -78,6 +87,23 @@ lambdaArgs (Tree _ ((Branch [Tree _ (Leaf (Symbol s)), ty])):xs) = lambdaArgs xs
 lambdaArgs [] = return []
 lambdaArgs ((Tree (SourceRange startLoc _) _):_) = Left (startLoc, "illegal argument name (should be (symbol type))")
 
-buildCase :: Tree -> Either (SourceLoc, Text) (Symbol, AST)
-buildCase (Tree _ (Branch [Tree _ (Leaf (Symbol name)), function])) = Right (name, fromTree function)
-buildCase (Tree (SourceRange startLoc _) _) = Left (startLoc, "illegal case (should be (constructor lambda)")
+atomLit :: Atom -> Maybe Literal
+atomLit (Number n) = Just $ LitNum n
+atomLit (AText t) = Just $ LitText t
+atomLit (Symbol _) = Nothing
+
+buildCase :: Tree -> Either (SourceLoc, Text) (Pattern, [Symbol], AST)
+buildCase (Tree _ (Branch [ Tree _ (Leaf (Symbol sym)), expr])) = Right (PAny, [sym], fromTree expr)
+buildCase (Tree _ (Branch [ Tree _ (Leaf a), expr])) = Right (PLit (fromJust . atomLit $ a), [], fromTree expr)
+buildCase (Tree _ (Branch [ Tree _ (Branch ((Tree _ (Leaf (Symbol name))) : syms))
+                          , expr])) = do
+  syms' <- getSyms syms
+  Right (PData name, syms', fromTree expr)
+buildCase (Tree (SourceRange startLoc _) _) = Left (startLoc, "illegal case (should be ((constructor vars*) expr)")
+
+getSyms :: [Tree] -> Either (SourceLoc, Text) [Symbol]
+getSyms [] = Right []
+getSyms (Tree _ (Leaf (Symbol s)) : xs) = do
+  rest <- getSyms xs
+  pure (s:rest)
+getSyms (Tree (SourceRange startLoc _) _ : _) = Left (startLoc, "expected name")

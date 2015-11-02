@@ -11,19 +11,18 @@ import Tisp.AST
 import Tisp.Expr
 import Tisp.Type
 
-parseExpr :: Text -> Maybe Typed
-parseExpr text =
-  case parse (tokenize text) of
-    Just (tree, _, []) ->
-      case infer . fromAST . fromTree $ tree of
-        Right t -> Just t
-        Left _ -> Nothing
-    _ -> Nothing
+parseExpr :: Text -> Typed
+parseExpr src =
+  case parse (tokenize src) of
+    Just (tree, _, []) -> infer . fromAST . fromTree $ tree
+    _ -> undefined
 
 tests :: [Test.Framework.Test]
 tests = hUnitTestToTests $ TestList
-  [ "type rational" ~: Just rational ~=? exprTy <$> parseExpr "42"
-  , "type monomorphic identity lambda" ~: Just (fn rational rational) ~=? exprTy <$> parseExpr "(lambda ((x Rational)) x)"
+  [ "type rational" ~: rational ~=? exprTy (parseExpr "42")
+  , "type monomorphic identity lambda" ~: (fn rational rational) ~=? exprTy (parseExpr "(lambda ((x Rational)) x)")
+  , "type wildcard case" ~: rational ~=? exprTy (parseExpr "(case 42 (x x))")
+  , "type matching lambda" ~: (fn rational rational) ~=? exprTy (parseExpr "(lambda ((x Rational)) (case x (0 1) (1 42) (x 7)))")
   ]
 
 main :: IO ()

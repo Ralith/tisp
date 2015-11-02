@@ -33,20 +33,28 @@ data Type = TyCon TypeConstructor
 class HasKind t where
   kind :: t -> Kind
 
-data DataConstructor = DataConstructor { _ctorTag :: Symbol, _ctorArgs :: [TypeVariable] -> [Type] }
-makeLenses ''DataConstructor
+data DataConstructor = DataConstructor [Type]
+  deriving (Eq, Show)
 
-data TypeDefinition = TypeDefinition Kind [DataConstructor]
+ctorArgs :: Lens' DataConstructor [Type]
+ctorArgs f (DataConstructor args) = fmap (\args' -> DataConstructor args') (f args)
+
+data TypeDefinition = TypeDefinition Kind [TypeVariable] [(Symbol, DataConstructor)]
+  deriving (Eq, Show)
 
 instance HasKind TypeDefinition where
-  kind (TypeDefinition k _) = k
+  kind (TypeDefinition k _ _) = k
 
 listDef :: TypeDefinition
 listDef = TypeDefinition (KFun Star Star)
-                         [ DataConstructor "nil" (\[_] -> [])
-                         , DataConstructor "cons" (\[t] -> [ TyVar t
-                                                           , TyApp (TyCon (TypeConstructor "List" (KFun Star Star))) (TyVar t)])
+                         [a]
+                         [ ("nil", DataConstructor [])
+                         , ("cons", DataConstructor [ TyVar a
+                                                    , TyApp (TyCon (TypeConstructor "List" (KFun Star Star)))
+                                                            (TyVar a)])
                          ]
+  where
+    a = TypeVariable "a" Star
 
 fn :: Type -> Type -> Type
 fn arg ret = TyApp (TyApp function arg) ret
@@ -124,12 +132,19 @@ varBind v t
   | kind v /= kind t        = Left "kind mismatch"
   | otherwise               = Right (singleton v t)
 
+primTy :: Text -> Type
+primTy n = TyCon $ TypeConstructor n Star
+
 rational :: Type
-rational = TyCon $ TypeConstructor "Rational" Star
+rational = primTy "Rational"
 
 pointer :: Type
-pointer = TyCon $ TypeConstructor "Pointer" Star
+pointer = primTy "Pointer"
+
+text :: Type
+text = primTy "Text"
 
 literalTy :: Literal -> Type
-literalTy (Num _) = rational
-literalTy (Foreign _) = pointer
+literalTy (LitNum _) = rational
+literalTy (LitText _) = text
+literalTy (LitForeign _) = pointer

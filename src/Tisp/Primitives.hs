@@ -19,4 +19,4 @@ import Tisp.Value
 
 values :: Map Symbol Value
 values = M.fromList $
-  [("+", VFunc (\(VLiteral (Num x)) -> VFunc (\(VLiteral (Num y)) -> VLiteral (Num (x + y)))))]
+  [("+", VFunc (\(VLiteral (LitNum x)) -> VFunc (\(VLiteral (LitNum y)) -> VLiteral (LitNum (x + y)))))]

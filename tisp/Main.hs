@@ -26,13 +26,10 @@ main = do
   -- putStrLn ""
   case tree of
     Nothing -> return ()
-    Just (t, _, _) ->
-      case infer . fromAST . fromTree $ t of
-        Left err -> do
-          putStrLn "type error: "
-          print err
-        Right typed -> do
-          print . exprTy $ typed
+    Just (t, _, _) -> do
+      let typed = infer . fromAST . fromTree $ t
+      print typed
+      print . exprTy $ typed
       -- case eval defaultEnv (fromAST ast) of
       --   VLiteral l -> print l
       --   VError _ _ msg -> putStrLn "ERROR:" >> BS.putStr (encodeUtf8 msg) >> putStrLn ""
