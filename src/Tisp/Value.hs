@@ -1,4 +1,4 @@
-module Tisp.Value (Literal(..), Value(..), Name(..)) where
+module Tisp.Value (Literal(..), Value(..), Name(..), nameBase) where
 
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -13,6 +13,10 @@ import Tisp.Tokenize (SourceLoc(..), SourceRange(..), Symbol)
 
 data Name = NUser Symbol | NMachine Symbol Word64
   deriving (Eq, Ord, Show)
+
+nameBase :: Name -> Symbol
+nameBase (NUser s) = s
+nameBase (NMachine s _) = s
 
 instance IsString Name where
   fromString = NUser . T.pack

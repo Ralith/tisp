@@ -30,6 +30,8 @@ main = do
       let typed = infer . fromAST . fromTree $ t
       print typed
       print . exprTy $ typed
+      forM_ (errors typed) $ \ (_, _, msg) -> do
+        BS.putStr . encodeUtf8 . T.concat $ ["ERROR: ", msg, "\n"]
       -- case eval defaultEnv (fromAST ast) of
       --   VLiteral l -> print l
       --   VError _ _ msg -> putStrLn "ERROR:" >> BS.putStr (encodeUtf8 msg) >> putStrLn ""

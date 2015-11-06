@@ -1,4 +1,4 @@
-module Tisp.Parse (Tree(..), TreeVal(..), parse) where
+module Tisp.Parse (Tree(..), TreeVal(..), parse, symbolList) where
 
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -38,3 +38,8 @@ parseBranch (SourceRange startLoc _) xs = (t:ts, endLoc', unparsed')
   where
     Just (t, endLoc, unparsed) = parse xs -- Safe because xs is guaranteed non-empty by prior case
     (ts, endLoc', unparsed') = parseBranch (SourceRange startLoc endLoc) unparsed
+
+symbolList :: [Tree] -> Either SourceLoc [Symbol]
+symbolList (Tree _ (Leaf (Symbol s)):xs) = (s:) <$> symbolList xs
+symbolList [] = return []
+symbolList ((Tree (SourceRange startLoc _) _):_) = Left startLoc

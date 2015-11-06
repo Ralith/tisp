@@ -1,5 +1,6 @@
 module Tisp.Type where
 
+import Control.Monad
 import Control.Lens
 import Data.Word
 import Data.Text (Text)
@@ -10,6 +11,7 @@ import qualified Data.Set as S
 
 import Tisp.Tokenize
 import Tisp.Value
+import Tisp.Parse
 
 data Kind = Star | KFun Kind Kind
   deriving (Eq, Ord, Show)
@@ -55,6 +57,39 @@ listDef = TypeDefinition (KFun Star Star)
                          ]
   where
     a = TypeVariable "a" Star
+
+parseTypeDef :: Map Symbol Type -> Tree -> Either (SourceLoc, Text) (Symbol, TypeDefinition)
+parseTypeDef env (Tree _ (Branch ( Tree _ (Leaf (Symbol "data"))
+                                 : Tree _ (Leaf (Symbol name))
+                                 : Tree _ (Branch vars)
+                                 : ctors))) = do
+  vars' <- case symbolList vars of
+             Left l -> Left (l, "expected symbol")
+             Right ss -> Right (map (flip TypeVariable Star . NUser) ss)
+  let k = (foldr (\_ k' -> KFun Star k') Star vars')
+  ctors' <- mapM (parseCtor (M.insert name (TyCon $ TypeConstructor name k)
+                                      (foldl (\e v@(TypeVariable (NUser n) _) -> M.insert n (TyVar v) e) env vars')))
+                 ctors
+  pure $ (name, TypeDefinition k vars' ctors')
+parseTypeDef _ (Tree range _) = Left (range ^. start, "malformed type definition")
+
+parseType :: Map Symbol Type -> Tree -> Either (SourceLoc, Text) Type
+parseType env (Tree _ (Branch (t:ts))) = do
+  t' <- parseType env t
+  foldM (\f x -> TyApp f <$> parseType env x) t' ts
+parseType _ (Tree range (Branch _)) = Left ((range ^. start), "malformed type application")
+parseType env (Tree range (Leaf (Symbol s))) =
+  case M.lookup s env of
+    Nothing -> Left ((range ^. start), "type not in scope")
+    Just t -> Right t
+parseType _ (Tree range (Leaf _)) = Left ((range ^. start), "illegal literal in type")
+parseType _ (Tree _ (TreeError l m)) = Left (l, m)
+
+parseCtor :: Map Symbol Type -> Tree -> Either (SourceLoc, Text) (Symbol, DataConstructor)
+parseCtor env (Tree _ (Branch (Tree _ (Leaf (Symbol name)) : argTys))) = do
+  args <- mapM (parseType env) argTys
+  pure $ (name, DataConstructor args)
+parseCtor _ (Tree range _) = Left ((range ^. start), "malformed type constructor (should be (Name arg-types*))")
 
 fn :: Type -> Type -> Type
 fn arg ret = TyApp (TyApp function arg) ret

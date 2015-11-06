@@ -1,4 +1,4 @@
-module Tisp.Expr (eval, fromAST, defaultEnv, infer, exprTy, Typed, TIError(..)) where
+module Tisp.Expr (eval, fromAST, defaultEnv, infer, exprTy, Expr(..), ExprVal(..), Typed, TIError(..), errors) where
 
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -30,13 +30,24 @@ data Expr a = Expr a (ExprVal a)
 deriving instance Show a => Show (Expr a)
 
 data ExprVal a = Var Var
-               | Abs Text Type (Expr a) -- arg name, arg type, body
+               | Abs Text (Expr a) -- arg name, arg type, body
                | App (Expr a) (Expr a)
                | Case (Expr a) [(Pattern, Expr a)]
                | Literal Literal
+               | The Type (Expr a)
                | ExprError SourceLoc Text
 
 deriving instance Show a => Show (ExprVal a)
+
+errors :: Expr a -> [(a, SourceLoc, Text)]
+errors (Expr label exprVal) =
+  case exprVal of
+    ExprError loc msg -> [(label, loc, msg)]
+    Abs _ x -> errors x
+    App f x -> errors f ++ errors x
+    Case x cs -> errors x ++ concatMap (errors . snd) cs
+    The _ x -> errors x
+    _ -> []
 
 data EvalEnv = EvalEnv { _evalLocals :: [Value], _evalGlobals :: Map Symbol Value}
 makeLenses ''EvalEnv
@@ -53,7 +64,7 @@ eval env (Expr label exprVal) =
     ExprError loc msg -> VError range loc msg
     Var (Local i) -> fromMaybe (VError range (range ^. start) "internal error: unbound local") (env ^? evalLocals . ix i)
     Var (Global s) -> fromMaybe (VError range (range ^. start) (T.concat ["unbound global: ", s])) (env ^. evalGlobals . at s)
-    Abs _ _ e -> VFunc (\x -> eval (evalLocals %~ (x:) $ env) e)
+    Abs _ e -> VFunc (\x -> eval (evalLocals %~ (x:) $ env) e)
     App f x ->
       case eval env f of
         VFunc f' ->
@@ -63,6 +74,7 @@ eval env (Expr label exprVal) =
         VError r l m -> VError r l m
         _ -> VError range (range ^. start) "applying non-function"
     Literal l -> VLiteral l
+    The _ x -> eval env x
     Case val@(Expr valLabel _) cases ->
       case eval env val of
         VData ctor args ->
@@ -76,17 +88,19 @@ eval env (Expr label exprVal) =
         _ -> VError range (valLabel ^. sourceRange . start) "case on unmatchable value"
 
 fromAST :: AST -> Untyped
-fromAST = fromAST' M.empty
+fromAST = fromAST' M.empty M.empty
 
 -- Could this use a better data structure than Map?
-fromAST' :: Map Symbol Int -> AST -> Untyped
-fromAST' locals (A.AST range astVal) =
+fromAST' :: Map Symbol Int -> Map Symbol Type -> AST -> Untyped
+fromAST' locals types (A.AST range astVal) =
   case astVal of
     A.ASTError loc msg -> Expr range $ ExprError loc msg
     A.Abs [] _ -> Expr range $ ExprError (range ^. start) "nullary abstraction"
     A.Abs args body -> fromAbs locals args body
     A.App _ [] -> Expr range $ ExprError (range ^. start) "nullary application"
-    A.App f xs -> foldl (\f' x -> Expr range $ App f' (fromAST' locals x)) (fromAST' locals f) xs
+    A.App (A.AST range' (A.Ref "the")) [ty, x] ->
+      Expr range $ App (Expr range (App (Expr range' (Var (Global "the"))) (typeExprFromAST ty))) (fromAST' locals types x)
+    A.App f xs -> foldl (\f' x -> Expr range $ App f' (fromAST' locals types x)) (fromAST' locals types f) xs
     A.Literal l -> Expr range $ Literal l
     A.Ref s -> Expr range $
       case M.lookup s locals of
@@ -94,40 +108,38 @@ fromAST' locals (A.AST range astVal) =
         Just i -> Var (Local i)
     A.Case expr cases -> Expr range $
       case partitionEithers (map caseFromAST cases) of
-        ([], branches) -> Case (fromAST' locals expr) branches
+        ([], branches) -> Case (fromAST' locals types expr) branches
         (((loc, msg) :_), _) -> ExprError loc msg
+    A.The ty expr -> Expr range $
+      case parseType types ty of
+        Left (loc, msg) -> ExprError loc msg
+        Right ty' -> The ty' (fromAST' locals types expr)
   where
-    fromAbs :: Map Symbol Int -> [(Symbol, AST)] -> AST -> Untyped
-    fromAbs locals' [] body = fromAST' locals' body
-    fromAbs locals' ((x, ty):xs) body =
-      case typeFromAST ty of
-        Right ty' -> Expr range (Abs x ty' (fromAbs (bind x locals') xs body))
-        Left (loc, err) -> Expr range $ ExprError loc err
+    fromAbs :: Map Symbol Int -> [Symbol] -> AST -> Untyped
+    fromAbs locals' [] body = fromAST' locals' types body
+    fromAbs locals' (x:xs) body = Expr range (Abs x (fromAbs (bind x locals') xs body))
 
     caseFromAST :: (Pattern, [Symbol], AST) -> Either (SourceLoc, Text) (Pattern, Untyped)
-    caseFromAST (PLit lit, [], expr) = Right (PLit lit, fromAST' locals expr)
-    caseFromAST (PAny, [sym], expr) = Right (PAny, fromAST' (bind sym locals) expr)
-    caseFromAST (PData sym, vars, expr) = Right (PData sym, fromAST' (foldr bind locals vars) expr)
+    caseFromAST (PLit lit, [], expr) = Right (PLit lit, fromAST' locals types expr)
+    caseFromAST (PAny, [sym], expr) = Right (PAny, fromAST' (bind sym locals) types expr)
+    caseFromAST (PData sym, vars, expr) = Right (PData sym, fromAST' (foldr bind locals vars) types expr)
     caseFromAST _ = error "caseFromAST: impossible"
 
     bind :: Symbol -> Map Symbol Int -> Map Symbol Int
     bind s ls = M.insert s 0 (M.map succ ls)
 
-typeFromAST :: AST -> Either (SourceLoc, Text) Type
-typeFromAST (A.AST range astVal) =
+typeExprFromAST :: AST -> Untyped
+typeExprFromAST (A.AST range astVal) =
   case astVal of
-    A.Ref s -> Right $ TyCon (TypeConstructor s Star)
-    A.App _ [] -> Left (range ^. start, "nullary type application")
-    A.App t xs -> do
-      base <- typeFromAST t
-      foldM (\t' x -> TyApp t' <$> typeFromAST x) base xs
-    _ -> Left (range ^. start, "illegal type specifier")
+    A.Ref s -> Expr range $ Var (Global s)
+    A.App t xs -> foldl (\t' x -> Expr range $ App t' (typeExprFromAST x)) (typeExprFromAST t) xs
+    _ -> Expr range $ ExprError (range ^. start) "malformed type specifier"
 
 data TIState = TIState { _tiSubst :: Subst, _tiNameCount :: Word64 }
 makeLenses ''TIState
 
 data TIError = UnificationError Text Type Type Type Type
-             | GenericError Text
+             | GenericError SourceLoc Text
   deriving Show
 
 newtype TI a = TI (StateT TIState (Except TIError) a)
@@ -139,10 +151,13 @@ runTI (TI x) = case runExcept (runStateT x (TIState mempty 0)) of
                  Right (y, st) -> Right (y, st ^. tiSubst)
 
 freshVar :: Kind -> TI TypeVariable
-freshVar k = do
+freshVar = freshVar' "t"
+
+freshVar' :: Symbol -> Kind -> TI TypeVariable
+freshVar' n k = do
   x <- use tiNameCount
   tiNameCount %= succ
-  pure (TypeVariable (NMachine "t" x) k)
+  pure (TypeVariable (NMachine n x) k)
 
 unify :: Type -> Type -> TI ()
 unify t1 t2 = do
@@ -164,14 +179,14 @@ instance Types a => Types (Expr a) where
   apply s (Expr label exprVal) =
     Expr (apply s label)
          (case exprVal of
-            Abs name argTy body -> Abs name (apply s argTy) (apply s body)
+            Abs name body -> Abs name (apply s body)
             App f x -> App (apply s f) (apply s x)
             x -> x)
 
   typeVars (Expr label exprVal) =
     S.union (typeVars label)
             (case exprVal of
-               Abs _ argTy body -> S.union (typeVars argTy) (typeVars body)
+               Abs _ body -> typeVars body
                App f x -> S.union (typeVars f) (typeVars x)
                _ -> S.empty)
 
@@ -181,25 +196,50 @@ exprTy (Expr (TypedLabel _ t) _) = t
 instance HasRange TypedLabel where
   sourceRange f (TypedLabel r t) = fmap (\r' -> TypedLabel r' t) (f r)
 
-infer' :: Map Symbol (Either (DataConstructor, Type) Type) -> [Type] -> Untyped -> TI Typed
-infer' globals locals (Expr range exprVal) =
+-- Freshen type variables
+instantiate :: Type -> TI Type
+instantiate t = fst <$> helper M.empty t
+  where
+    helper :: Map Name TypeVariable -> Type -> TI (Type, Map Name TypeVariable)
+    helper _ con@(TyCon _) = pure (con, M.empty)
+    helper vs (TyVar (TypeVariable n k)) = do
+      v <- case M.lookup n vs of
+           Nothing -> freshVar' (nameBase n) k
+           Just v -> pure v
+      pure (TyVar v, M.insert n v vs)
+    helper vs (TyApp ty x) = do
+      (ty', vs') <- helper vs ty
+      (x', vs'') <- helper vs' x
+      pure (TyApp ty' x', vs'')
+
+infer' :: Map Symbol Type -> Map Symbol (Either (DataConstructor, Type) Type) -> [Type] -> Untyped -> TI Typed
+infer' types globals locals (Expr range exprVal) =
   (case exprVal of
      Var (Local i) -> ex (locals !! i) (Var (Local i))
-     Var (Global n) ->
-       case M.lookup n globals of
-         Nothing -> throwError $ GenericError "variable not in scope"
-     Abs name argTy body -> do
-       body'@(Expr (TypedLabel _ bodyTy) _) <- infer' globals (argTy : locals) body
-       ex (fn argTy bodyTy) (Abs name argTy body')
+     Var (Global n) -> do
+       ty <- case M.lookup n globals of
+               Nothing -> throwError $ GenericError (range ^. start) "variable not in scope"
+               Just (Right t) -> pure t
+               Just (Left (DataConstructor args, t)) ->
+                 instantiate (foldr fn t args)
+       ex ty $ Var (Global n)
+     Abs name body -> do
+       argTy <- TyVar <$> freshVar Star
+       body'@(Expr (TypedLabel _ bodyTy) _) <- infer' types globals (argTy : locals) body
+       ex (fn argTy bodyTy) (Abs name body')
      App f x -> do
-       f' <- infer' globals locals f
-       x' <- infer' globals locals x
+       f' <- infer' types globals locals f
+       x' <- infer' types globals locals x
        retty <- TyVar <$> freshVar Star
        unify (fn (exprTy x') retty) (exprTy f')
        ex retty (App f' x')
+     The t x -> do
+       x' <- infer' types globals locals x
+       unify t (exprTy x')
+       pure x'
      Literal l -> ex (literalTy l) (Literal l)
      Case x cases -> do
-       x' <- infer' globals locals x
+       x' <- infer' types globals locals x
        retty <- TyVar <$> freshVar Star
        cases' <- forM cases $ \(pat, body) -> do
          locals' <- case pat of
@@ -212,9 +252,9 @@ infer' globals locals (Expr range exprVal) =
                           Just (Left (DataConstructor tys, ctorTy)) -> do
                             unify (exprTy x') ctorTy
                             pure $ tys ++ locals
-                          Just (Right _) -> throwError $ GenericError (T.concat ["not a data constructor: ", name])
-                          Nothing -> throwError $ GenericError (T.concat ["data constructor not in scope: ", name])
-         body' <- infer' globals locals' body
+                          Just (Right _) -> throwError $ GenericError (range ^. start) (T.concat ["not a data constructor: ", name])
+                          Nothing -> throwError $ GenericError (range ^. start) (T.concat ["data constructor not in scope: ", name])
+         body' <- infer' types globals locals' body
          unify retty (exprTy body')
          pure (pat, body')
        ex retty $ Case x' cases'
@@ -224,16 +264,16 @@ infer' globals locals (Expr range exprVal) =
   `catchError`
   (\err -> do
      ty <- TyVar <$> freshVar Star
-     ex ty . ExprError (range ^. start) $
-       case err of
-         UnificationError msg t1 t2 spec1 spec2 -> msg
-         GenericError msg -> msg)
+     let (loc, msg) = case err of
+                        UnificationError m t1 t2 spec1 spec2 -> (range ^. start, m)
+                        GenericError l m -> (l, m)
+     ex ty $ ExprError loc msg)
   where
     ex :: Type -> ExprVal TypedLabel -> TI Typed
     ex t = pure . Expr (TypedLabel range t)
 
 infer :: Untyped -> Typed
 infer x =
-  case runTI (infer' M.empty [] x)  of
+  case runTI (infer' M.empty M.empty [] x)  of
     Left _ -> error "infer: impossible"
     Right (t, s) -> apply s t

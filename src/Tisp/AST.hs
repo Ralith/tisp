@@ -11,7 +11,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromJust)
 
-import Tisp.Parse (Tree(..), TreeVal(..))
+import Tisp.Parse (Tree(..), TreeVal(..), symbolList)
 import Tisp.Tokenize (Symbol, Atom(..), SourceRange(..), SourceLoc(..))
 import Tisp.Value (Literal(..))
 
@@ -22,11 +22,12 @@ data Pattern = PLit Literal | PData Symbol | PAny
   deriving (Show)
 
 data ASTVal = ASTError SourceLoc Text
-            | Abs [(Symbol, AST)] AST
+            | Abs [Symbol] AST
             | App AST [AST]
             | Literal Literal
             | Ref Symbol
             | Case AST [(Pattern, [Symbol], AST)]
+            | The Tree AST
   deriving (Show)
 
 data Definition = Definition Symbol AST AST
@@ -41,9 +42,10 @@ parens = PP.parens . PP.align
 
 instance Pretty ASTVal where
   pretty (ASTError l t) = PP.angles $ pretty l <> PP.space <> PP.text (T.unpack t)
-  pretty (Abs args x) = parens $ PP.char 'λ' <+> PP.parens (PP.fillSep $ map (PP.text . T.unpack . fst) args) <+> pretty x
+  pretty (Abs args x) = parens $ PP.char 'λ' <+> PP.parens (PP.fillSep $ map (PP.text . T.unpack) args) <+> pretty x
   pretty (App f xs) = parens $ PP.fillSep (pretty f : map pretty xs)
   pretty (Literal l) = pretty l
+  pretty (The ty expr) = parens $ PP.text "the" <+> pretty ty <+> pretty expr
   pretty (Ref v) = PP.text . T.unpack $ v
   pretty (Case x cs) = parens $ PP.text "case" <+> pretty x <+>
                        (PP.fillSep (map (\(pat, vars, expr) -> (case pat of
@@ -71,21 +73,20 @@ fromTree (Tree r@(SourceRange treeStart _) v) = AST r $ helper v
     helper (Leaf (Number x)) = Literal (LitNum x)
     helper (Leaf (AText x)) = Literal (LitText x)
     helper (Branch (Tree _ (Leaf (Symbol "lambda")) : Tree _ (Branch args) : body : [])) =
-      case lambdaArgs args of
+      case symbolList args of
         Right argSyms -> Abs argSyms (fromTree body)
-        Left (l, e) -> ASTError l e
+        Left l -> ASTError l "expected symbol"
     helper (Branch ((Tree _ (Leaf (Symbol "case"))) : value : cases)) =
       case mapM buildCase cases of
         Right cs -> Case (fromTree value) cs
-        Left (l, e) -> ASTError l e
+        Left (l, m) -> ASTError l m
     helper (Branch []) = ASTError treeStart "illegal application (at least one function and one argument must be supplied)"
     helper (Branch [(Tree _ x)]) = helper x
+    helper (Branch (Tree _ (Leaf (Symbol "the")) : xs)) =
+      case xs of
+        [ty, expr] -> The ty (fromTree expr)
+        _ -> ASTError treeStart "malformed type declaration (should be (the type expr))"
     helper (Branch (f:xs)) = App (fromTree f) (map fromTree xs)
-
-lambdaArgs :: [Tree] -> Either (SourceLoc, Text) [(Symbol, AST)]
-lambdaArgs (Tree _ ((Branch [Tree _ (Leaf (Symbol s)), ty])):xs) = lambdaArgs xs >>= (\x -> return ((s, fromTree ty):x))
-lambdaArgs [] = return []
-lambdaArgs ((Tree (SourceRange startLoc _) _):_) = Left (startLoc, "illegal argument name (should be (symbol type))")
 
 atomLit :: Atom -> Maybe Literal
 atomLit (Number n) = Just $ LitNum n
@@ -99,7 +100,7 @@ buildCase (Tree _ (Branch [ Tree _ (Branch ((Tree _ (Leaf (Symbol name))) : syms
                           , expr])) = do
   syms' <- getSyms syms
   Right (PData name, syms', fromTree expr)
-buildCase (Tree (SourceRange startLoc _) _) = Left (startLoc, "illegal case (should be ((constructor vars*) expr)")
+buildCase (Tree (SourceRange startLoc _) _) = Left (startLoc, "illegal case (should be ((constructor vars*) expr) or (literal expr) or (var expr))")
 
 getSyms :: [Tree] -> Either (SourceLoc, Text) [Symbol]
 getSyms [] = Right []

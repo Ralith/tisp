@@ -20,9 +20,9 @@ parseExpr src =
 tests :: [Test.Framework.Test]
 tests = hUnitTestToTests $ TestList
   [ "type rational" ~: rational ~=? exprTy (parseExpr "42")
-  , "type monomorphic identity lambda" ~: (fn rational rational) ~=? exprTy (parseExpr "(lambda ((x Rational)) x)")
+  , "type monomorphic identity lambda" ~: (fn rational rational) ~=? exprTy (parseExpr "(lambda (x) (the Rational x))")
   , "type wildcard case" ~: rational ~=? exprTy (parseExpr "(case 42 (x x))")
-  , "type matching lambda" ~: (fn rational rational) ~=? exprTy (parseExpr "(lambda ((x Rational)) (case x (0 1) (1 42) (x 7)))")
+  , "type matching lambda" ~: (fn rational rational) ~=? exprTy (parseExpr "(lambda (x) (case x (0 1) (1 42) (x 7)))")
   ]
 
 main :: IO ()
