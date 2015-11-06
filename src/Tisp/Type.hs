@@ -4,6 +4,7 @@ import Control.Monad
 import Control.Lens
 import Data.Word
 import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Set (Set)
@@ -17,6 +18,7 @@ data Kind = Star | KFun Kind Kind
   deriving (Eq, Ord, Show)
 
 data TypeConstructor = TypeConstructor Symbol Kind
+                     | TyInteger
                      | TyBits Word32
                      | TyFloat Word32
   deriving (Eq, Show)
@@ -80,7 +82,7 @@ parseType env (Tree _ (Branch (t:ts))) = do
 parseType _ (Tree range (Branch _)) = Left ((range ^. start), "malformed type application")
 parseType env (Tree range (Leaf (Symbol s))) =
   case M.lookup s env of
-    Nothing -> Left ((range ^. start), "type not in scope")
+    Nothing -> Left ((range ^. start), T.concat ["type \"", s, "\" not in scope"])
     Just t -> Right t
 parseType _ (Tree range (Leaf _)) = Left ((range ^. start), "illegal literal in type")
 parseType _ (Tree _ (TreeError l m)) = Left (l, m)
@@ -171,7 +173,7 @@ primTy :: Text -> Type
 primTy n = TyCon $ TypeConstructor n Star
 
 rational :: Type
-rational = primTy "Rational"
+rational = TyApp (TyCon (TypeConstructor "Ratio" (KFun Star Star))) (TyCon TyInteger)
 
 pointer :: Type
 pointer = primTy "Pointer"
@@ -183,3 +185,16 @@ literalTy :: Literal -> Type
 literalTy (LitNum _) = rational
 literalTy (LitText _) = text
 literalTy (LitForeign _) = pointer
+literalTy (LitInt _) = TyCon $ TyInteger
+
+primTys :: Map Symbol Type
+primTys = M.fromList $
+  [ ("I8", TyCon (TyBits 8))
+  , ("I16", TyCon (TyBits 16))
+  , ("I32", TyCon (TyBits 32))
+  , ("I64", TyCon (TyBits 64))
+  , ("Float32", TyCon (TyFloat 32))
+  , ("Float64", TyCon (TyFloat 64))
+  , ("Integer", TyCon TyInteger)
+  , ("Ratio", TyCon (TypeConstructor "Ratio" (KFun Star Star)))
+  ]

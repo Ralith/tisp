@@ -26,6 +26,7 @@ instance Pretty Name where
   pretty (NMachine s n) = PP.text (T.unpack s) <> PP.char '#' <> PP.integer (fromIntegral n)
 
 data Literal = LitNum Rational
+             | LitInt Integer
              | LitText Text
              | LitForeign Text
   deriving (Eq, Show)

@@ -91,8 +91,8 @@ eval env (Expr label exprVal) =
             Just (_, expr) -> eval (evalLocals %~ (VLiteral l :) $ env) expr
         _ -> VError range (valLabel ^. sourceRange . start) "case on unmatchable value"
 
-fromAST :: AST -> Untyped
-fromAST = fromAST' M.empty M.empty
+fromAST :: Map Symbol Type -> AST -> Untyped
+fromAST tys = fromAST' M.empty tys
 
 -- Could this use a better data structure than Map?
 fromAST' :: Map Symbol Int -> Map Symbol Type -> AST -> Untyped

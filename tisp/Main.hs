@@ -16,6 +16,7 @@ import Tisp.Tokenize
 import Tisp.AST
 import Tisp.Expr
 import Tisp.Value
+import Tisp.Type
 
 main :: IO ()
 main = do
@@ -27,7 +28,7 @@ main = do
   case tree of
     Nothing -> return ()
     Just (t, _, _) -> do
-      let typed = infer . fromAST . fromTree $ t
+      let typed = infer . fromAST primTys . fromTree $ t
       print typed
       print . exprTy $ typed
       forM_ (errors typed) $ \ (_, _, msg) -> do

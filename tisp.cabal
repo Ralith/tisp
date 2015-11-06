@@ -33,7 +33,7 @@ executable tisp
 test-suite test
   type:                exitcode-stdio-1.0
   main-is:             Main.hs
-  build-depends:       base >=4.8 && <5, test-framework, test-framework-hunit, HUnit ==1.3.*, tisp, lens ==4.*, text ==1.2.*
+  build-depends:       base >=4.8 && <5, containers ==0.5.*, test-framework, test-framework-hunit, HUnit ==1.3.*, tisp, lens ==4.*, text ==1.2.*
   hs-source-dirs:      test
   default-language:    Haskell2010
   ghc-options:         -Wall
