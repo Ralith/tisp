@@ -4,7 +4,6 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import qualified Data.Set as S
 import Control.Lens
 import Data.Maybe (fromMaybe)
 import Data.Word
@@ -27,6 +26,9 @@ data Var = Local Int | Global Symbol
 
 data Expr a = Expr a (ExprVal a)
 
+exprLabel :: Lens' (Expr a) a
+exprLabel f (Expr l v) = fmap (\l' -> Expr l' v) (f l)
+
 deriving instance Show a => Show (Expr a)
 
 data ExprVal a = Var Var
@@ -39,15 +41,17 @@ data ExprVal a = Var Var
 
 deriving instance Show a => Show (ExprVal a)
 
+instance Plated (Expr a) where
+  plate _ e@(Expr _ (Var _)) = pure e
+  plate f (Expr l (Abs n e)) = Expr l <$> (Abs n <$> f e)
+  plate f (Expr l (App g x)) = Expr l <$> (App <$> f g <*> f x)
+  plate f (Expr l (Case e cs)) = Expr l <$> (Case <$> f e <*> traverseOf (traverse._2) f cs)
+  plate _ e@(Expr _ (Literal _)) = pure e
+  plate f (Expr l (The ty e)) = Expr l <$> (The ty <$> f e)
+  plate _ e@(Expr _ (ExprError _ _)) = pure e
+
 errors :: Expr a -> [(a, SourceLoc, Text)]
-errors (Expr label exprVal) =
-  case exprVal of
-    ExprError loc msg -> [(label, loc, msg)]
-    Abs _ x -> errors x
-    App f x -> errors f ++ errors x
-    Case x cs -> errors x ++ concatMap (errors . snd) cs
-    The _ x -> errors x
-    _ -> []
+errors e = [(label, loc, msg) | (Expr label (ExprError loc msg)) <- universe e]
 
 data EvalEnv = EvalEnv { _evalLocals :: [Value], _evalGlobals :: Map Symbol Value}
 makeLenses ''EvalEnv
@@ -176,19 +180,12 @@ instance Types TypedLabel where
   typeVars (TypedLabel _ ty) = typeVars ty
 
 instance Types a => Types (Expr a) where
-  apply s (Expr label exprVal) =
-    Expr (apply s label)
-         (case exprVal of
-            Abs name body -> Abs name (apply s body)
-            App f x -> App (apply s f) (apply s x)
-            x -> x)
-
-  typeVars (Expr label exprVal) =
-    S.union (typeVars label)
-            (case exprVal of
-               Abs _ body -> typeVars body
-               App f x -> S.union (typeVars f) (typeVars x)
-               _ -> S.empty)
+  apply s = transform ((\(Expr l x) ->
+                          Expr (apply s l) $
+                          case x of
+                            The ty v -> The (apply s ty) v
+                            v -> v))
+  typeVars = foldMapOf plate (views exprLabel typeVars)
 
 exprTy :: Typed -> Type
 exprTy (Expr (TypedLabel _ t) _) = t
