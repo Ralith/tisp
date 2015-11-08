@@ -11,7 +11,6 @@ import Tisp.Parse
 import Tisp.Tokenize
 import Tisp.AST
 import Tisp.Expr
-import Tisp.Type
 
 parseExpr :: Text -> Typed
 parseExpr src =
