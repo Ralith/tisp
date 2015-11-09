@@ -1,276 +1,175 @@
-module Tisp.Expr (eval, fromAST, defaultEnv, infer, exprTy, Expr(..), ExprVal(..), Typed, TIError(..), errors) where
+module Tisp.Expr (fromAST, Expr(..), ExprVal(..), errors, eval, reify, normalize) where
 
 import Data.Text (Text)
-import qualified Data.Text as T
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Control.Lens
 import Data.Maybe (fromMaybe)
-import Data.Word
-import Data.Either (partitionEithers)
 import Data.Foldable
-import Control.Monad
+import Data.Monoid
 
 import Tisp.Tokenize
 import Tisp.Value
 import Tisp.AST (AST, Pattern(..))
 import qualified Tisp.AST as A
-import qualified Tisp.Primitives as Prims
-import Tisp.Type
 
-import Control.Monad.State
-import Control.Monad.Except
+data Expr a = Expr { exprLabel :: a, exprVal :: (ExprVal a) }
 
-data Var = Local Int | Global Symbol
-  deriving (Show, Ord, Eq)
-
-data Expr a = Expr a (ExprVal a)
-
-exprLabel :: Lens' (Expr a) a
-exprLabel f (Expr l v) = fmap (\l' -> Expr l' v) (f l)
-
+deriving instance Eq a => Eq (Expr a)
 deriving instance Show a => Show (Expr a)
 
 data ExprVal a = Var Var
-               | Abs Text (Expr a) -- arg name, arg type, body
+               | Lambda Symbol (Expr a) (Expr a)
+               | Pi Symbol (Expr a) (Expr a)
                | App (Expr a) (Expr a)
                | Case (Expr a) [(Pattern, Expr a)]
                | Literal Literal
-               | The Type (Expr a)
                | ExprError SourceLoc Text
 
+deriving instance Eq a => Eq (ExprVal a)
 deriving instance Show a => Show (ExprVal a)
 
 instance Plated (Expr a) where
   plate _ e@(Expr _ (Var _)) = pure e
-  plate f (Expr l (Abs n e)) = Expr l <$> (Abs n <$> f e)
+  plate f (Expr l (Lambda n t e)) = Expr l <$> (Lambda n <$> f t <*> f e)
+  plate f (Expr l (Pi n t e)) = Expr l <$> (Pi n <$> f t <*> f e)
   plate f (Expr l (App g x)) = Expr l <$> (App <$> f g <*> f x)
   plate f (Expr l (Case e cs)) = Expr l <$> (Case <$> f e <*> traverseOf (traverse._2) f cs)
   plate _ e@(Expr _ (Literal _)) = pure e
-  plate f (Expr l (The ty e)) = Expr l <$> (The ty <$> f e)
   plate _ e@(Expr _ (ExprError _ _)) = pure e
+
+data Subst a = Shift Int | Dot a (Subst a)
+
+instance Functor Subst where
+  fmap _ (Shift s) = Shift s
+  fmap f (Dot x s) = Dot (f x) (fmap f s)
+
+class CanSubst a where
+  subst :: Subst a -> a -> a
+
+instance CanSubst a => Monoid (Subst a) where
+  mempty = Shift 0
+
+  mappend s (Shift 0) = s
+  mappend (Dot _ s) (Shift m) = s <> (Shift (pred m))
+  mappend (Shift n) (Shift m) = Shift (n + m)
+  mappend s (Dot e t) = Dot (subst s e) (s <> t)
+
+shift :: CanSubst a => Subst a -> Subst a
+shift = mappend (Shift 1)
+
+instance CanSubst (Expr a) where
+  subst s e@(Expr label e') =
+    case (s, e') of
+      (Shift m, Var (Local k)) -> Expr label $ Var (Local (k+m))
+      (Dot x _, Var (Local 0)) -> x
+      (Dot _ s', Var (Local k)) -> subst s' (Expr label (Var (Local (pred k))))
+      (_, Var (Global _)) -> e
+      (_, Literal _) -> e
+      (_, ExprError _ _) -> e
+      (_, Pi n t x) -> Expr label $ Pi n (subst s t) (subst (shift s) x)
+      (_, Lambda n t x) -> Expr label $ Lambda n (subst s t) (subst (shift s) x)
+      (_, App f x) -> Expr label $ App (subst s f) (subst s x)
+      (_, Case x cs) -> Expr label $
+        Case (subst s x)
+             (map (\(pat, c) ->
+                     (pat
+                     ,case pat of
+                        PLit _ -> subst s c
+                        PAny _ -> subst (shift s) c
+                        PData _ vs -> subst (foldl' (\s' _ -> shift s') s vs) c))
+                  cs)
 
 errors :: Expr a -> [(a, SourceLoc, Text)]
 errors e = [(label, loc, msg) | (Expr label (ExprError loc msg)) <- universe e]
 
-data EvalEnv = EvalEnv { _evalLocals :: [Value], _evalGlobals :: Map Symbol Value}
-makeLenses ''EvalEnv
+eval :: HasRange a => Expr a -> Value
+eval = eval' []
 
-defaultEnv :: EvalEnv
-defaultEnv = EvalEnv [] Prims.values
+eval' :: HasRange a => [Value] -> Expr a -> Value
+eval' env (Expr label exprVal) =
+  case exprVal of
+    ExprError l m -> VError (label ^. sourceRange) l m
+    Var v@(Local i) -> fromMaybe (VNeutral (NVar v)) (env ^? ix i)
+    Var v@(Global _) -> VNeutral (NVar v)
+    Literal l -> VLiteral l
+    Lambda n t v -> VLambda n (eval' env t) (\x -> eval' (x:env) v)
+    Pi n t v -> VPi n (eval' env t) (\x -> eval' (x:env) v)
+    App f x ->
+      let x' = eval' env x in
+      case eval' env f of
+        VLambda _ _ f' -> f' x'
+        VNeutral n -> VNeutral (NApp n x')
+        _ -> VError (label ^. sourceRange) (label ^. sourceRange.start) "applied non-function"
+    Case x cs ->
+      case eval' env x of
+        v@(VData _ _) -> findClause cs v
+        v@(VLiteral _) -> findClause cs v
+        _ -> VError (exprLabel x ^. sourceRange) (exprLabel x ^. sourceRange.start) "case on non-data"
+  where
+    findClause :: HasRange a => [(Pattern, Expr a)] -> Value -> Value
+    findClause [] _ = VError (label ^. sourceRange) (label ^. sourceRange.start) "no matching case for value"
+    findClause ((PAny _, v):_) x = eval' (x:env) v
+    findClause ((PLit l, v):vs) x@(VLiteral l') =
+      if l == l'
+         then eval' env v
+         else findClause vs x
+    findClause ((PData n syms, v):vs) x@(VData n' vals) =
+      if n == n'
+         then if length syms /= length vals
+                 then error "eval': impossible"
+                 else eval' (vals ++ env) v
+         else findClause vs x
+    findClause _ _ = VError (label ^. sourceRange) (label ^. sourceRange.start) "pattern type mismatch"
+
+reify :: Value -> Expr ()
+reify (VLiteral l) = Expr () $ Literal l
+reify (VNeutral n) = helper n
+  where
+    helper :: Neutral -> Expr ()
+    helper (NVar v) = Expr () $ Var v
+    helper (NApp f v) = Expr () $ App (helper f) (reify v)
+reify (VData s vs) = foldl' (\f x -> Expr () $ App f (reify x))
+                            (Expr () $ (Var (Global s)))
+                            vs
+reify (VLambda n t f) = Expr () $ Lambda n (reify t) (reify (f (VNeutral (NVar (Local 0)))))
+reify (VPi n t f) = Expr () $ Pi n (reify t) (reify (f (VNeutral (NVar (Local 0)))))
+reify (VError _ l m) = Expr () $ ExprError l m
+
+normalize :: HasRange a => Expr a -> Expr ()
+normalize = reify . eval
 
 type Untyped = Expr SourceRange
 
-eval :: HasRange a => EvalEnv -> Expr a -> Value
-eval env (Expr label exprVal) =
-  let range = label ^. sourceRange in
-  case exprVal of
-    ExprError loc msg -> VError range loc msg
-    Var (Local i) -> fromMaybe (VError range (range ^. start) "internal error: unbound local") (env ^? evalLocals . ix i)
-    Var (Global s) -> fromMaybe (VError range (range ^. start) (T.concat ["unbound global: ", s])) (env ^. evalGlobals . at s)
-    Abs _ e -> VFunc (\x -> eval (evalLocals %~ (x:) $ env) e)
-    App f x ->
-      case eval env f of
-        VFunc f' ->
-          case eval env x of
-            VError r l m -> VError r l m
-            x' -> f' x'
-        VError r l m -> VError r l m
-        _ -> VError range (range ^. start) "applying non-function"
-    Literal l -> VLiteral l
-    The _ x -> eval env x
-    Case val@(Expr valLabel _) cases ->
-      case eval env val of
-        VData ctor args ->
-          case find (\(PData x, _) -> x == ctor) cases of
-            Nothing -> VError range (valLabel ^. sourceRange . start) "missing case for value"
-            Just (_, expr) -> eval (evalLocals %~ (args ++) $ env) expr
-        VLiteral l ->
-          case find (\(PLit l', _) -> l == l') cases of
-            Nothing -> VError range (valLabel ^. sourceRange . start) "missing case for value"
-            Just (_, expr) -> eval (evalLocals %~ (VLiteral l :) $ env) expr
-        _ -> VError range (valLabel ^. sourceRange . start) "case on unmatchable value"
-
-fromAST :: Map Symbol Type -> AST -> Untyped
-fromAST tys = fromAST' M.empty tys
+fromAST :: AST -> Untyped
+fromAST = fromAST' M.empty
 
 -- Could this use a better data structure than Map?
-fromAST' :: Map Symbol Int -> Map Symbol Type -> AST -> Untyped
-fromAST' locals types (A.AST range astVal) =
+fromAST' :: Map Symbol Int -> AST -> Untyped
+fromAST' locals (A.AST range astVal) =
   case astVal of
     A.ASTError loc msg -> Expr range $ ExprError loc msg
-    A.Abs [] _ -> Expr range $ ExprError (range ^. start) "nullary abstraction"
-    A.Abs args body -> fromAbs locals args body
+    A.Lambda [] _ -> Expr range $ ExprError (range ^. start) "nullary lambda"
+    A.Lambda args body -> fromAbs Lambda locals args body
+    A.Pi [] _ -> Expr range $ ExprError (range ^. start) "nullary Pi"
+    A.Pi args body -> fromAbs Pi locals args body
     A.App _ [] -> Expr range $ ExprError (range ^. start) "nullary application"
-    A.App (A.AST range' (A.Ref "the")) [ty, x] ->
-      Expr range $ App (Expr range (App (Expr range' (Var (Global "the"))) (typeExprFromAST ty))) (fromAST' locals types x)
-    A.App f xs -> foldl (\f' x -> Expr range $ App f' (fromAST' locals types x)) (fromAST' locals types f) xs
+    A.App f xs -> foldl (\f' x -> Expr range $ App f' (fromAST' locals x)) (fromAST' locals f) xs
     A.Literal l -> Expr range $ Literal l
-    A.Ref s -> Expr range $
+    A.Var s -> Expr range $
       case M.lookup s locals of
         Nothing -> Var (Global s)
         Just i -> Var (Local i)
-    A.Case expr cases -> Expr range $
-      case partitionEithers (map caseFromAST cases) of
-        ([], branches) -> Case (fromAST' locals types expr) branches
-        (((loc, msg) :_), _) -> ExprError loc msg
-    A.The ty expr -> Expr range $
-      case parseType types ty of
-        Left (loc, msg) -> ExprError loc msg
-        Right ty' -> The ty' (fromAST' locals types expr)
+    A.Case expr cases -> Expr range $ Case (fromAST' locals expr) (map caseFromAST cases)
   where
-    fromAbs :: Map Symbol Int -> [Symbol] -> AST -> Untyped
-    fromAbs locals' [] body = fromAST' locals' types body
-    fromAbs locals' (x:xs) body = Expr range (Abs x (fromAbs (bind x locals') xs body))
+    fromAbs :: (Symbol -> Untyped -> Untyped -> ExprVal SourceRange) -> Map Symbol Int -> [(Symbol, AST)] -> AST -> Untyped
+    fromAbs _    locals' []           body = fromAST' locals' body
+    fromAbs ctor locals' ((x, ty):xs) body = Expr range (ctor x (fromAST' locals' ty) (fromAbs ctor (bind x locals') xs body))
 
-    caseFromAST :: (Pattern, [Symbol], AST) -> Either (SourceLoc, Text) (Pattern, Untyped)
-    caseFromAST (PLit lit, [], expr) = Right (PLit lit, fromAST' locals types expr)
-    caseFromAST (PAny, [sym], expr) = Right (PAny, fromAST' (bind sym locals) types expr)
-    caseFromAST (PData sym, vars, expr) = Right (PData sym, fromAST' (foldr bind locals vars) types expr)
-    caseFromAST _ = error "caseFromAST: impossible"
+    caseFromAST :: (Pattern, AST) -> (Pattern, Untyped)
+    caseFromAST (p@(PLit _), expr) = (p, fromAST' locals expr)
+    caseFromAST (p@(PAny sym), expr) = (p, fromAST' (bind sym locals) expr)
+    caseFromAST (p@(PData _ vars), expr) = (p, fromAST' (foldr bind locals vars) expr)
 
     bind :: Symbol -> Map Symbol Int -> Map Symbol Int
     bind s ls = M.insert s 0 (M.map succ ls)
-
-typeExprFromAST :: AST -> Untyped
-typeExprFromAST (A.AST range astVal) =
-  case astVal of
-    A.Ref s -> Expr range $ Var (Global s)
-    A.App t xs -> foldl (\t' x -> Expr range $ App t' (typeExprFromAST x)) (typeExprFromAST t) xs
-    _ -> Expr range $ ExprError (range ^. start) "malformed type specifier"
-
-data TIState = TIState { _tiSubst :: Subst, _tiNameCount :: Word64 }
-makeLenses ''TIState
-
-data TIError = UnificationError Text Type Type Type Type
-             | GenericError SourceLoc Text
-  deriving Show
-
-newtype TI a = TI (StateT TIState (Except TIError) a)
-  deriving (Functor, Applicative, Monad, MonadState TIState, MonadError TIError)
-
-runTI :: TI a -> Either TIError (a, Subst)
-runTI (TI x) = case runExcept (runStateT x (TIState mempty 0)) of
-                 Left err -> Left err
-                 Right (y, st) -> Right (y, st ^. tiSubst)
-
-freshVar :: Kind -> TI TypeVariable
-freshVar = freshVar' "t"
-
-freshVar' :: Symbol -> Kind -> TI TypeVariable
-freshVar' n k = do
-  x <- use tiNameCount
-  tiNameCount %= succ
-  pure (TypeVariable (NMachine n x) k)
-
-unify :: Type -> Type -> TI ()
-unify t1 t2 = do
-  s <- use tiSubst
-  case unifier (apply s t1) (apply s t2) of
-    Left (msg, t1', t2') -> throwError (UnificationError msg t1 t2 t1' t2')
-    Right u -> tiSubst %= mappend u
-
-data TypedLabel = TypedLabel SourceRange Type
-  deriving Show
-
-type Typed = Expr TypedLabel
-
-instance Types TypedLabel where
-  apply s (TypedLabel r ty) = TypedLabel r (apply s ty)
-  typeVars (TypedLabel _ ty) = typeVars ty
-
-instance Types a => Types (Expr a) where
-  apply s = transform ((\(Expr l x) ->
-                          Expr (apply s l) $
-                          case x of
-                            The ty v -> The (apply s ty) v
-                            v -> v))
-  typeVars = foldMapOf plate (views exprLabel typeVars)
-
-exprTy :: Typed -> Type
-exprTy (Expr (TypedLabel _ t) _) = t
-
-instance HasRange TypedLabel where
-  sourceRange f (TypedLabel r t) = fmap (\r' -> TypedLabel r' t) (f r)
-
--- Freshen type variables
-instantiate :: Type -> TI Type
-instantiate t = fst <$> helper M.empty t
-  where
-    helper :: Map Name TypeVariable -> Type -> TI (Type, Map Name TypeVariable)
-    helper _ con@(TyCon _) = pure (con, M.empty)
-    helper vs (TyVar (TypeVariable n k)) = do
-      v <- case M.lookup n vs of
-           Nothing -> freshVar' (nameBase n) k
-           Just v -> pure v
-      pure (TyVar v, M.insert n v vs)
-    helper vs (TyApp ty x) = do
-      (ty', vs') <- helper vs ty
-      (x', vs'') <- helper vs' x
-      pure (TyApp ty' x', vs'')
-
-infer' :: Map Symbol Type -> Map Symbol (Either (DataConstructor, Type) Type) -> [Type] -> Untyped -> TI Typed
-infer' types globals locals (Expr range exprVal) =
-  (case exprVal of
-     Var (Local i) -> ex (locals !! i) (Var (Local i))
-     Var (Global n) -> do
-       ty <- case M.lookup n globals of
-               Nothing -> throwError $ GenericError (range ^. start) "variable not in scope"
-               Just (Right t) -> pure t
-               Just (Left (DataConstructor args, t)) ->
-                 instantiate (foldr fn t args)
-       ex ty $ Var (Global n)
-     Abs name body -> do
-       argTy <- TyVar <$> freshVar Star
-       body'@(Expr (TypedLabel _ bodyTy) _) <- infer' types globals (argTy : locals) body
-       ex (fn argTy bodyTy) (Abs name body')
-     App f x -> do
-       f' <- infer' types globals locals f
-       x' <- infer' types globals locals x
-       retty <- TyVar <$> freshVar Star
-       unify (fn (exprTy x') retty) (exprTy f')
-       ex retty (App f' x')
-     The t x -> do
-       x' <- infer' types globals locals x
-       unify t (exprTy x')
-       pure x'
-     Literal l -> ex (literalTy l) (Literal l)
-     Case x cases -> do
-       x' <- infer' types globals locals x
-       retty <- TyVar <$> freshVar Star
-       cases' <- forM cases $ \(pat, body) -> do
-         locals' <- case pat of
-                      PLit lit -> do
-                        unify (exprTy x') (literalTy lit)
-                        pure locals
-                      PAny -> pure $ exprTy x' : locals
-                      PData name ->
-                        case M.lookup name globals of
-                          Just (Left (DataConstructor tys, ctorTy)) -> do
-                            unify (exprTy x') ctorTy
-                            pure $ tys ++ locals
-                          Just (Right _) -> throwError $ GenericError (range ^. start) (T.concat ["not a data constructor: ", name])
-                          Nothing -> throwError $ GenericError (range ^. start) (T.concat ["data constructor not in scope: ", name])
-         body' <- infer' types globals locals' body
-         unify retty (exprTy body')
-         pure (pat, body')
-       ex retty $ Case x' cases'
-     ExprError l t -> do
-       ty <- TyVar <$> freshVar Star
-       ex ty (ExprError l t))
-  `catchError`
-  (\err -> do
-     ty <- TyVar <$> freshVar Star
-     let (loc, msg) = case err of
-                        UnificationError m t1 t2 spec1 spec2 -> (range ^. start, m)
-                        GenericError l m -> (l, m)
-     ex ty $ ExprError loc msg)
-  where
-    ex :: Type -> ExprVal TypedLabel -> TI Typed
-    ex t = pure . Expr (TypedLabel range t)
-
-infer :: Untyped -> Typed
-infer x =
-  case runTI (infer' M.empty M.empty [] x)  of
-    Left _ -> error "infer: impossible"
-    Right (t, s) -> apply s t

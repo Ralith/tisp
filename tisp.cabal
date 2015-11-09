@@ -16,7 +16,7 @@ cabal-version:       >=1.10
 
 library
   default-extensions:  OverloadedStrings, TemplateHaskell, GeneralizedNewtypeDeriving, RecordWildCards, StandaloneDeriving
-  exposed-modules:     Tisp.Tokenize, Tisp.Parse, Tisp.AST, Tisp.Value, Tisp.Type, Tisp.Expr, Tisp.Primitives
+  exposed-modules:     Tisp.Tokenize, Tisp.Parse, Tisp.AST, Tisp.Value, Tisp.Expr
   build-depends:       base >=4.8 && <5, containers ==0.5.*, bytestring ==0.10.*, text ==1.2.*, lens ==4.*, mtl ==2.2.*, ansi-wl-pprint ==0.6.*, llvm-general-pure ==3.5.*
   hs-source-dirs:      src
   default-language:    Haskell2010

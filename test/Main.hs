@@ -4,26 +4,41 @@ import Test.Framework
 import Test.Framework.Providers.HUnit
 import Test.HUnit
 import Data.Text (Text)
-import Data.Map.Strict (Map)
-import qualified Data.Map as M
+import Control.Lens
 
 import Tisp.Parse
 import Tisp.Tokenize
-import Tisp.AST
+import Tisp.AST (fromTree)
+import Tisp.Value (Literal(..))
 import Tisp.Expr
 
-parseExpr :: Text -> Typed
+parseExpr :: Text -> Expr SourceRange
 parseExpr src =
   case parse (tokenize src) of
-    Just (tree, _, []) -> infer . fromAST primTys . fromTree $ tree
-    _ -> undefined
+    Just (tree, _, []) -> fromAST . fromTree $ tree
+    _ -> error "couldn't parse"
+
+forget :: Expr a -> Expr ()
+forget (Expr _ val) = Expr () $
+  case val of
+    Lambda n t x -> Lambda n (forget t) (forget x)
+    Pi n t x -> Pi n (forget t) (forget x)
+    App f x -> App (forget f) (forget x)
+    Case x cs -> Case (forget x) (map (_2 %~ forget) cs)
+    Var v -> Var v
+    Literal l -> Literal l
+    ExprError l m -> ExprError l m
+
+parseExpr' :: Text -> ExprVal ()
+parseExpr' = exprVal . forget . parseExpr
 
 tests :: [Test.Framework.Test]
 tests = hUnitTestToTests $ TestList
-  [ "type rational" ~: rational ~=? exprTy (parseExpr "42")
-  , "type monomorphic identity lambda" ~: (fn rational rational) ~=? exprTy (parseExpr "(lambda (x) (the (Ratio Integer) x))")
-  , "type wildcard case" ~: rational ~=? exprTy (parseExpr "(case 42 (x x))")
-  , "type matching lambda" ~: (fn rational rational) ~=? exprTy (parseExpr "(lambda (x) (case x (0 1) (1 42) (x 7)))")
+  [ "parse rational" ~: Literal (LitNum 42) ~=? exprVal (parseExpr "42")
+  , "normalize trivial application" ~: Literal (LitNum 42) ~=? exprVal (normalize (parseExpr "((lambda ((x Rational)) x) 42)"))
+  , "normalize with variable" ~:
+     parseExpr' "(lambda ((y Rational)) y)" ~=?
+     exprVal (normalize (parseExpr "(lambda ((y Rational)) ((lambda ((x Rational)) x) y))"))
   ]
 
 main :: IO ()

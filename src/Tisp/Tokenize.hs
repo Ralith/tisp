@@ -42,7 +42,7 @@ class HasRange a where
   sourceRange :: Lens' a SourceRange
 
 instance HasRange SourceRange where
-  sourceRange f r = fmap id (f r)
+  sourceRange = id
 
 data Token = Token SourceRange TokenValue
   deriving (Show)

@@ -1,4 +1,4 @@
-module Tisp.Value (Literal(..), Value(..), Name(..), nameBase) where
+module Tisp.Value (Literal(..), Var(..), Neutral(..), Value(..), Name(..), nameBase) where
 
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -26,9 +26,9 @@ instance Pretty Name where
   pretty (NMachine s n) = PP.text (T.unpack s) <> PP.char '#' <> PP.integer (fromIntegral n)
 
 data Literal = LitNum Rational
-             | LitInt Integer
              | LitText Text
              | LitForeign Text
+             | LitUniverse Integer
   deriving (Eq, Show)
 
 instance Pretty Literal where
@@ -37,8 +37,16 @@ instance Pretty Literal where
                         else PP.parens $ PP.text "rational" <+> PP.integer (numerator r) <+> PP.integer (denominator r)
   pretty (LitText t) = PP.dquotes $ PP.text (T.unpack t)
   pretty (LitForeign f) = PP.parens $ PP.text "foreign" <+> PP.text (T.unpack f)
+  pretty (LitUniverse n) = PP.parens $ PP.text "Type" <+> PP.integer n
+
+data Var = Local Int | Global Symbol
+  deriving (Show, Ord, Eq)
+
+data Neutral = NVar Var | NApp Neutral Value
 
 data Value = VLiteral Literal
+           | VNeutral Neutral
            | VData Symbol [Value]
-           | VFunc (Value -> Value)
+           | VLambda Symbol Value (Value -> Value)
+           | VPi Symbol Value (Value -> Value)
            | VError SourceRange SourceLoc Text
