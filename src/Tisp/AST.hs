@@ -1,4 +1,4 @@
-module Tisp.AST (AST(..), ASTVal(..), Pattern(..), Definition(..), Record, fromTree, buildRecord) where
+module Tisp.AST (AST(..), ASTVal(..), Equiv, equiv, Pattern(..), Definition(..), Record, fromTree, buildRecord, arity) where
 
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -22,6 +22,21 @@ data AST = AST SourceRange ASTVal
 data Pattern = PLit Literal | PData Symbol [Symbol] | PAny Symbol
   deriving (Eq, Show)
 
+class Equiv a where
+  -- Equal without regard to naming
+  equiv :: a -> a -> Bool
+
+instance Equiv Pattern where
+  equiv (PLit x) (PLit y) = x == y
+  equiv (PData x _) (PData y _) = x == y
+  equiv (PAny _) (PAny _) = True
+  equiv _ _ = False
+
+arity :: Pattern -> Int
+arity (PLit _) = 0
+arity (PData _ xs) = length xs
+arity (PAny _) = 1
+
 data ASTVal = ASTError SourceLoc Text
             | Lambda [(Symbol, AST)] AST
             | Pi [(Symbol, AST)] AST
@@ -44,11 +59,11 @@ parens = PP.parens . PP.align
 instance Pretty ASTVal where
   pretty (ASTError l t) = PP.angles $ pretty l <> PP.space <> PP.text (T.unpack t)
   pretty (Lambda args x) =
-    parens $ PP.char 'λ'
+    parens $ PP.text "lambda"
     <+> (parens . PP.fillSep $ map (\(n, t) -> parens $ (PP.text . T.unpack $ n) <+> pretty t) args)
     <+> pretty x
   pretty (Pi args x) =
-    parens $ PP.text "Π"
+    parens $ PP.text "Pi"
     <+> (parens . PP.fillSep $ map (\(n, t) -> parens $ (PP.text . T.unpack $ n) <+> pretty t) args)
     <+> pretty x
   pretty (App f xs) = parens $ PP.fillSep (pretty f : map pretty xs)

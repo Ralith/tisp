@@ -4,11 +4,14 @@ import Test.Framework
 import Test.Framework.Providers.HUnit
 import Test.HUnit
 import Data.Text (Text)
-import Control.Lens
+import qualified Data.Text as T
+
+import Text.PrettyPrint.ANSI.Leijen (displayS, renderPretty, pretty, (<+>))
+import qualified Text.PrettyPrint.ANSI.Leijen as PP
 
 import Tisp.Parse
 import Tisp.Tokenize
-import Tisp.AST (fromTree)
+import Tisp.AST (equiv, fromTree)
 import Tisp.Value (Literal(..))
 import Tisp.Expr
 
@@ -18,27 +21,27 @@ parseExpr src =
     Just (tree, _, []) -> fromAST . fromTree $ tree
     _ -> error "couldn't parse"
 
-forget :: Expr a -> Expr ()
-forget (Expr _ val) = Expr () $
-  case val of
-    Lambda n t x -> Lambda n (forget t) (forget x)
-    Pi n t x -> Pi n (forget t) (forget x)
-    App f x -> App (forget f) (forget x)
-    Case x cs -> Case (forget x) (map (_2 %~ forget) cs)
-    Var v -> Var v
-    Literal l -> Literal l
-    ExprError l m -> ExprError l m
-
-parseExpr' :: Text -> ExprVal ()
-parseExpr' = exprVal . forget . parseExpr
+reduced :: Text -> Text -> Assertion
+reduced n x =
+  let x' = normalize Strong (parseExpr x)
+  in assertBool ("expected: " ++ T.unpack n ++ "\n"
+                  ++ displayS (renderPretty 0.6 80 (PP.text "but got: " <+> pretty (toAST x'))) "")
+                (parseExpr n `equiv` x')
 
 tests :: [Test.Framework.Test]
 tests = hUnitTestToTests $ TestList
   [ "parse rational" ~: Literal (LitNum 42) ~=? exprVal (parseExpr "42")
-  , "normalize trivial application" ~: Literal (LitNum 42) ~=? exprVal (normalize (parseExpr "((lambda ((x Rational)) x) 42)"))
+  , "normalize trivial application" ~: reduced "42" "((lambda ((x Rational)) x) 42)"
   , "normalize with variable" ~:
-     parseExpr' "(lambda ((y Rational)) y)" ~=?
-     exprVal (normalize (parseExpr "(lambda ((y Rational)) ((lambda ((x Rational)) x) y))"))
+     reduced "(lambda ((y Rational)) y)"
+             "(lambda ((y Rational)) ((lambda ((x Rational)) x) y))"
+  , "normalize binary" ~: reduced "42" "((lambda ((x Rational) (y Rational)) y) 12 42) "
+  , "normalize const" ~:
+     reduced "(lambda ((z Rational) (y Rational)) z)"
+             "(lambda ((z Rational) (y Rational)) \
+             \ ((lambda ((x (Function Rational Rational))) \
+             \   (x y))\
+             \ (lambda ((x Rational)) z)))"
   ]
 
 main :: IO ()

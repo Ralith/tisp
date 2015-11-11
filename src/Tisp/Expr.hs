@@ -1,4 +1,4 @@
-module Tisp.Expr (fromAST, Expr(..), ExprVal(..), errors, eval, reify, normalize) where
+module Tisp.Expr (fromAST, toAST, Expr(..), ExprVal(..), errors, NormalizeMode(..), normalize, Subst(..), subst) where
 
 import Data.Text (Text)
 import Data.Map.Strict (Map)
@@ -10,7 +10,7 @@ import Data.Monoid
 
 import Tisp.Tokenize
 import Tisp.Value
-import Tisp.AST (AST, Pattern(..))
+import Tisp.AST (AST, Equiv, equiv, Pattern(..))
 import qualified Tisp.AST as A
 
 data Expr a = Expr { exprLabel :: a, exprVal :: (ExprVal a) }
@@ -39,6 +39,7 @@ instance Plated (Expr a) where
   plate _ e@(Expr _ (ExprError _ _)) = pure e
 
 data Subst a = Shift Int | Dot a (Subst a)
+  deriving (Eq, Show)
 
 instance Functor Subst where
   fmap _ (Shift s) = Shift s
@@ -55,9 +56,6 @@ instance CanSubst a => Monoid (Subst a) where
   mappend (Shift n) (Shift m) = Shift (n + m)
   mappend s (Dot e t) = Dot (subst s e) (s <> t)
 
-shift :: CanSubst a => Subst a -> Subst a
-shift = mappend (Shift 1)
-
 instance CanSubst (Expr a) where
   subst s e@(Expr label e') =
     case (s, e') of
@@ -67,8 +65,8 @@ instance CanSubst (Expr a) where
       (_, Var (Global _)) -> e
       (_, Literal _) -> e
       (_, ExprError _ _) -> e
-      (_, Pi n t x) -> Expr label $ Pi n (subst s t) (subst (shift s) x)
-      (_, Lambda n t x) -> Expr label $ Lambda n (subst s t) (subst (shift s) x)
+      (_, Pi n t x) -> Expr label $ Pi n (subst s t) (subst (Dot (Expr label (Var (Local 0))) (Shift 1 <> s)) x)
+      (_, Lambda n t x) -> Expr label $ Lambda n (subst s t) (subst (Dot (Expr label (Var (Local 0))) (Shift 1 <> s)) x)
       (_, App f x) -> Expr label $ App (subst s f) (subst s x)
       (_, Case x cs) -> Expr label $
         Case (subst s x)
@@ -76,73 +74,103 @@ instance CanSubst (Expr a) where
                      (pat
                      ,case pat of
                         PLit _ -> subst s c
-                        PAny _ -> subst (shift s) c
-                        PData _ vs -> subst (foldl' (\s' _ -> shift s') s vs) c))
+                        PAny _ -> subst (Shift 1 <> s) c
+                        PData _ vs -> subst (foldl' (\s' _ -> Shift 1 <> s') s vs) c))
                   cs)
+
+shift :: CanSubst a => Int -> a -> a
+shift k e = subst (Shift k) e
+
+singleton :: a -> Subst a
+singleton x = Dot x (Shift 0)
 
 errors :: Expr a -> [(a, SourceLoc, Text)]
 errors e = [(label, loc, msg) | (Expr label (ExprError loc msg)) <- universe e]
 
-eval :: HasRange a => Expr a -> Value
-eval = eval' []
+instance Equiv (Expr a) where
+  -- Alpha equivalence
+  -- Assumes case branches are sorted.
+  equiv a b =
+    case (exprVal a, exprVal b) of
+      (Var x, Var y) -> x == y
+      (Lambda _ t1 x1, Lambda _ t2 x2) -> equiv t1 t2 && equiv x1 x2
+      (Pi _ t1 x1, Pi _ t2 x2) -> equiv t1 t2 && equiv x1 x2
+      (App f1 x1, App f2 x2) -> equiv f1 f2 && equiv x1 x2
+      (Case x1 cs1, Case x2 cs2) -> equiv x1 x2 && all (\((p1, c1), (p2, c2)) -> equiv p1 p2 && equiv c1 c2) (zip cs1 cs2)
+      (Literal x, Literal y) -> x == y
+      (ExprError _ _, ExprError _ _) -> True
+      _ -> False
 
-eval' :: HasRange a => [Value] -> Expr a -> Value
-eval' env (Expr label exprVal) =
-  case exprVal of
-    ExprError l m -> VError (label ^. sourceRange) l m
-    Var v@(Local i) -> fromMaybe (VNeutral (NVar v)) (env ^? ix i)
-    Var v@(Global _) -> VNeutral (NVar v)
-    Literal l -> VLiteral l
-    Lambda n t v -> VLambda n (eval' env t) (\x -> eval' (x:env) v)
-    Pi n t v -> VPi n (eval' env t) (\x -> eval' (x:env) v)
+data NormalizeMode = Weak | Strong
+
+data NormalizeEnv a = NormalizeEnv (Map Symbol (Expr a, Expr a)) [(Symbol, Expr a)]
+
+envLookup :: Int -> NormalizeEnv a -> Maybe (Symbol, Expr a)
+envLookup k (NormalizeEnv _ xs) = (_2 %~ shift k) <$> xs ^? ix k
+
+envGlobals :: Lens' (NormalizeEnv a) (Map Symbol (Expr a, Expr a))
+envGlobals f (NormalizeEnv gs ls) = fmap (\gs' -> NormalizeEnv gs' ls) (f gs)
+
+envBind :: Symbol -> Expr a -> NormalizeEnv a -> NormalizeEnv a
+envBind n ty (NormalizeEnv gs e) = NormalizeEnv gs ((n,ty):e)
+
+normalize :: NormalizeMode -> Expr a -> Expr a
+normalize m = normalize' m (NormalizeEnv M.empty [])
+
+normalize' :: NormalizeMode -> NormalizeEnv a -> Expr a -> Expr a
+normalize' mode env (Expr l e) =
+  case e of
+    Var (Local _) -> Expr l e
+    Var (Global g) -> fromMaybe (Expr l e) (view _2 <$> env ^. envGlobals.at g)
+    Lambda n t x -> Expr l $
+      case mode of
+        Weak -> e
+        Strong -> let normTy = normalize' mode env t
+                  in Lambda n normTy (normalize' mode (envBind n normTy env) x)
+    Pi n t x -> Expr l $
+      case mode of
+        Weak -> e
+        Strong -> let normTy = normalize' mode env t
+                  in Pi n normTy (normalize' mode (envBind n normTy env) x)
     App f x ->
-      let x' = eval' env x in
-      case eval' env f of
-        VLambda _ _ f' -> f' x'
-        VNeutral n -> VNeutral (NApp n x')
-        _ -> VError (label ^. sourceRange) (label ^. sourceRange.start) "applied non-function"
-    Case x cs ->
-      case eval' env x of
-        v@(VData _ _) -> findClause cs v
-        v@(VLiteral _) -> findClause cs v
-        _ -> VError (exprLabel x ^. sourceRange) (exprLabel x ^. sourceRange.start) "case on non-data"
-  where
-    findClause :: HasRange a => [(Pattern, Expr a)] -> Value -> Value
-    findClause [] _ = VError (label ^. sourceRange) (label ^. sourceRange.start) "no matching case for value"
-    findClause ((PAny _, v):_) x = eval' (x:env) v
-    findClause ((PLit l, v):vs) x@(VLiteral l') =
-      if l == l'
-         then eval' env v
-         else findClause vs x
-    findClause ((PData n syms, v):vs) x@(VData n' vals) =
-      if n == n'
-         then if length syms /= length vals
-                 then error "eval': impossible"
-                 else eval' (vals ++ env) v
-         else findClause vs x
-    findClause _ _ = VError (label ^. sourceRange) (label ^. sourceRange.start) "pattern type mismatch"
-
-reify :: Value -> Expr ()
-reify (VLiteral l) = Expr () $ Literal l
-reify (VNeutral n) = helper n
-  where
-    helper :: Neutral -> Expr ()
-    helper (NVar v) = Expr () $ Var v
-    helper (NApp f v) = Expr () $ App (helper f) (reify v)
-reify (VData s vs) = foldl' (\f x -> Expr () $ App f (reify x))
-                            (Expr () $ (Var (Global s)))
-                            vs
-reify (VLambda n t f) = Expr () $ Lambda n (reify t) (reify (f (VNeutral (NVar (Local 0)))))
-reify (VPi n t f) = Expr () $ Pi n (reify t) (reify (f (VNeutral (NVar (Local 0)))))
-reify (VError _ l m) = Expr () $ ExprError l m
-
-normalize :: HasRange a => Expr a -> Expr ()
-normalize = reify . eval
+      let x' = case mode of { Weak -> x; Strong -> normalize' mode env x; } in
+      case normalize' mode env f of
+        Expr _ (Lambda _ _ body) -> normalize' mode env (subst (singleton x') body)
+        f' -> Expr l $ App f' x'
+    Literal _ -> Expr l e
+    ExprError _ _ -> Expr l e
 
 type Untyped = Expr SourceRange
 
+toAST :: HasRange a => Expr a -> AST
+toAST = toAST' []
+
 fromAST :: AST -> Untyped
 fromAST = fromAST' M.empty
+
+toAST' :: HasRange a => [Symbol] -> Expr a -> AST
+toAST' env (Expr label exprVal) =
+  A.AST (label ^. sourceRange) $
+  case exprVal of
+    ExprError loc msg -> A.ASTError loc msg
+    Lambda n t x -> uncurry A.Lambda (flattenLambda env n t x)
+    Pi n t x -> uncurry A.Pi (flattenPi env n t x)
+    App f x -> uncurry A.App (flattenApp env [] f x)
+    Literal l -> A.Literal l
+    Var (Local i) -> A.Var (env !! i)
+    Var (Global s) -> A.Var s
+
+flattenLambda :: HasRange a => [Symbol] -> Symbol -> Expr a -> Expr a -> ([(Symbol, AST)], AST)
+flattenLambda env n t (Expr _ (Lambda n' t' x)) = flattenLambda (n:env) n' t' x & _1 %~ ((n, toAST' env t):)
+flattenLambda env n t x = ([(n, toAST' env t)], toAST' (n:env) x)
+
+flattenPi :: HasRange a => [Symbol] -> Symbol -> Expr a -> Expr a -> ([(Symbol, AST)], AST)
+flattenPi env n t (Expr _ (Pi n' t' x)) = flattenPi (n:env) n' t' x & _1 %~ ((n, toAST' env t):)
+flattenPi env n t x = ([(n, toAST' env t)], toAST' (n:env) x)
+
+flattenApp :: HasRange a => [Symbol] ->[AST] -> Expr a -> Expr a -> (AST, [AST])
+flattenApp env accum (Expr _ (App f x')) x = flattenApp env (toAST' env x : accum) f x'
+flattenApp env accum f x = (toAST' env f, toAST' env x : accum)
 
 -- Could this use a better data structure than Map?
 fromAST' :: Map Symbol Int -> AST -> Untyped
