@@ -63,7 +63,7 @@ data TokenValue = TokError SourceLoc Text | Atom Atom | LParen | RParen
 
 instance Pretty Atom where
   pretty (Number n) = if denominator n == 1 then PP.integer (numerator n) else (PP.char '#' <> (PP.angles $ PP.rational n))
-  pretty (AText t) = PP.dquotes $ PP.text (T.unpack t)
+  pretty (AText t) = PP.text (show t)
   pretty (Symbol s) = PP.text (T.unpack s)
 
 instance Pretty SourceLoc where
@@ -116,6 +116,7 @@ tokenize' = do
                             pos' <- use loc
                             (return [Token (SourceRange pos pos') RParen])
                   '-' -> (: []) <$> number
+                  '"' -> (: []) <$> string
                   _ | isSpace x -> advance >> return []
                     | isDigit x -> (: []) <$> number
                     | otherwise -> (: []) <$> symbol
@@ -127,11 +128,43 @@ number :: Tok Token
 number = do
   (range, xs) <- symbolText
   return $ case T.signed T.rational xs of
-             Left e -> Token range (TokError (range ^. start) (T.pack e))
+             Left e -> Token range (TokError (range ^. start) (T.concat ["illegal number literal: ", T.pack e]))
              Right (x, "") -> Token range (Atom . Number $ x)
              Right (_, garbage) ->
                let len = fromIntegral $ T.length garbage
                in Token range (TokError ((column -~ len) . (char -~ len) $ range ^. end) "garbage after number")
+
+string :: Tok Token
+string = do
+  pos <- use loc
+  advance
+  value <- helper pos False
+  pos' <- use loc
+  pure $ Token (SourceRange pos pos')
+               (case value of
+                  Left (l, msg) -> TokError l msg
+                  Right v -> (Atom . AText . T.pack $ v))
+  where
+    helper :: SourceLoc -> Bool -> Tok (Either (SourceLoc, Text) [Char])
+    helper pos escape = do
+      c <- peek
+      l <- use loc
+      case c of
+        Nothing -> pure $ Left (pos, "missing terminating doublequote")
+        Just x -> advance >>
+          if escape
+             then case lookup x [('\\', '\\')
+                                ,('"', '"')
+                                ,('n', '\n')
+                                ,('r', '\r')
+                                ,('t', '\t')
+                                ] of
+                    Nothing -> pure $ Left (l, "illegal escape character")
+                    Just x' -> fmap (x':) <$> helper pos False
+             else case x of
+                    '"' -> pure $ Right []
+                    '\\' -> helper pos True
+                    _ -> fmap (x:) <$> helper pos False
 
 symbol :: Tok Token
 symbol = (\(range, x) -> Token range (Atom (Symbol x))) <$> symbolText

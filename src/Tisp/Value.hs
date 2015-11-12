@@ -35,7 +35,7 @@ instance Pretty Literal where
   pretty (LitNum r) = if denominator r == 1
                         then PP.integer (numerator r)
                         else PP.parens $ PP.text "rational" <+> PP.integer (numerator r) <+> PP.integer (denominator r)
-  pretty (LitText t) = PP.dquotes $ PP.text (T.unpack t)
+  pretty (LitText t) = PP.text (show t)
   pretty (LitForeign f) = PP.parens $ PP.text "foreign" <+> PP.text (T.unpack f)
   pretty (LitUniverse n) = PP.parens $ PP.text "Type" <+> PP.integer n
 
