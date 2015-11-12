@@ -1,4 +1,4 @@
-module Tisp.AST (AST(..), ASTVal(..), Equiv, equiv, Pattern(..), Definition(..), Record, fromTree, buildRecord, arity) where
+module Tisp.AST (AST(..), ASTVal(..), astVal, Equiv, equiv, Pattern(..), Definition(..), Record, fromTree, buildRecord, arity) where
 
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -11,6 +11,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromJust)
 import Control.Lens
+import Data.Ratio
 
 import Tisp.Parse (Tree(..), TreeVal(..))
 import Tisp.Tokenize (Symbol, Atom(..), SourceRange(..), SourceLoc(..), start)
@@ -45,6 +46,9 @@ data ASTVal = ASTError SourceLoc Text
             | Var Symbol
             | Case AST [(Pattern, AST)]
   deriving (Show)
+
+astVal :: AST -> ASTVal
+astVal (AST _ v) = v
 
 data Definition = Definition Symbol AST AST
 

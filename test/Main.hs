@@ -23,7 +23,7 @@ parseExpr src =
 
 reduced :: Text -> Text -> Assertion
 reduced n x =
-  let x' = normalize Strong (parseExpr x)
+  let x' = normalize emptyEnv (parseExpr x)
   in assertBool ("expected: " ++ T.unpack n ++ "\n"
                   ++ displayS (renderPretty 0.6 80 (PP.text "but got: " <+> pretty (toAST x'))) "")
                 (parseExpr n `equiv` x')

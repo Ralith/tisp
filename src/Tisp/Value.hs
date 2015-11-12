@@ -1,4 +1,4 @@
-module Tisp.Value (Literal(..), Var(..), Neutral(..), Value(..), Name(..), nameBase) where
+module Tisp.Value (Literal(..), Var(..), Neutral(..), Value(..), ValueVal(..), Name(..), nameBase) where
 
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -9,7 +9,7 @@ import Data.Ratio
 import Text.PrettyPrint.ANSI.Leijen (Pretty, pretty, (<>), (<+>))
 import qualified Text.PrettyPrint.ANSI.Leijen as PP hiding ((<$>))
 
-import Tisp.Tokenize (SourceLoc(..), SourceRange(..), Symbol)
+import Tisp.Tokenize (SourceLoc(..), Symbol)
 
 data Name = NUser Symbol | NMachine Symbol Word64
   deriving (Eq, Ord, Show)
@@ -42,11 +42,13 @@ instance Pretty Literal where
 data Var = Local Int | Global Symbol
   deriving (Show, Ord, Eq)
 
-data Neutral = NVar Var | NApp Neutral Value
+data Neutral a = NVar Var | NApp (Neutral a) (Value a)
 
-data Value = VLiteral Literal
-           | VNeutral Neutral
-           | VData Symbol [Value]
-           | VLambda Symbol Value (Value -> Value)
-           | VPi Symbol Value (Value -> Value)
-           | VError SourceRange SourceLoc Text
+data Value a = Value a (ValueVal a)
+
+data ValueVal a = VLiteral Literal
+                | VNeutral (Neutral a)
+                | VData Symbol [Value a]
+                | VLambda Symbol (Value a) (Value a -> Value a)
+                | VPi Symbol (Value a) (Value a -> Value a)
+                | VError SourceLoc Text

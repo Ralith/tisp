@@ -17,7 +17,7 @@ main = runInputT defaultSettings loop
   where
     loop :: InputT IO ()
     loop = do
-      input <- getInputLine "> "
+      input <- getInputLine "λ "
       case input of
         Nothing -> pure ()
         Just text -> do
@@ -27,5 +27,6 @@ main = runInputT defaultSettings loop
             Nothing -> outputStrLn "parse error"
             Just (t, _, _) -> do
               let expr = fromAST . fromTree $ t
-              liftIO $ (putDoc . pretty . toAST . normalize Strong $ expr) >> putStrLn ""
+              liftIO $ (putDoc . pretty . toAST . normalize emptyEnv $ expr) >> putStrLn ""
+              liftIO $ (putDoc . pretty . toAST . normalize emptyEnv . infer emptyEnv $ expr) >> putStrLn ""
           loop
