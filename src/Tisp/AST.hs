@@ -96,6 +96,11 @@ fromTree (Tree r@(SourceRange treeStart _) v) = AST r $ helper v
     helper (Leaf (Symbol x)) = Var x
     helper (Leaf (Number x)) = Literal (LitNum x)
     helper (Leaf (AText x)) = Literal (LitText x)
+    helper (Branch [Tree _ (Leaf (Symbol "Type")), Tree _ (Leaf (Number x))])
+      | denominator x == 1 && x >= 0 = Literal (LitUniverse (numerator x))
+      | otherwise = ASTError treeStart "illegal type level (must be a natural number)"
+    helper (Branch (Tree _ (Leaf (Symbol "Type")) : _)) =
+      ASTError treeStart "malformed type (should be (Type <natural>))"
     helper (Branch (Tree _ (Leaf (Symbol "lambda")) : Tree _ (Branch args) : body : [])) =
       case argList args of
         Right args' -> Lambda args' (fromTree body)
