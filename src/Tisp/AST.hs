@@ -105,6 +105,10 @@ fromTree (Tree r@(SourceRange treeStart _) v) = AST r $ helper v
       | otherwise = ASTError treeStart "illegal type level (must be a natural number)"
     helper (Branch (Tree _ (Leaf (Symbol "Type")) : _)) =
       ASTError treeStart "malformed type (should be (Type <natural>))"
+    helper (Branch (Tree _ (Leaf (Symbol "Pi")) : Tree _ (Branch args) : body : [])) =
+      case argList args of
+        Right args' -> Pi args' (fromTree body)
+        Left l -> ASTError l "invalid argument declaration: expected (symbol type)"
     helper (Branch (Tree _ (Leaf (Symbol "lambda")) : Tree _ (Branch args) : body : [])) =
       case argList args of
         Right args' -> Lambda args' (fromTree body)
