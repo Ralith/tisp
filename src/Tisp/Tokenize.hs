@@ -15,12 +15,13 @@ import qualified Data.Text.Read as T
 import Data.Char
 import Data.Word (Word64)
 import Data.Ratio
+import Data.Function (on)
 
 import Control.Monad.RWS
 import Control.Lens
 
 import Text.PrettyPrint.ANSI.Leijen (Pretty, pretty)
-import qualified Text.PrettyPrint.ANSI.Leijen as PP hiding ((<$>))
+import qualified Text.PrettyPrint.ANSI.Leijen as PP
 
 type Symbol = Text
 
@@ -30,6 +31,10 @@ data Atom = Number Rational | AText Text | Symbol Symbol
 data SourceLoc = SourceLoc { _char :: Word64, _line :: Word64, _column :: Word64 }
   deriving (Show, Eq)
 makeLenses ''SourceLoc
+
+instance Ord SourceLoc where
+  compare = on compare (view char)
+
 data SourceRange = SourceRange { _start :: SourceLoc, _end :: SourceLoc }
   deriving (Show, Eq)
 makeLenses ''SourceRange

@@ -112,7 +112,7 @@ fromTree (Tree r@(SourceRange treeStart _) v) = AST r $ helper v
     helper (Branch (Tree _ (Leaf (Symbol "lambda")) : Tree _ (Branch args) : body : [])) =
       case argList args of
         Right args' -> Lambda args' (fromTree body)
-        Left l -> ASTError l "invalid argument: expected (symbol type)"
+        Left l -> ASTError l "invalid argument declaration: expected (symbol type)"
     helper (Branch ((Tree _ (Leaf (Symbol "case"))) : value : cases)) =
       case mapM buildCase cases of
         Right cs -> Case (fromTree value) cs
